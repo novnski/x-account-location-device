@@ -25,6 +25,15 @@ const ICON_NODES = {
         ['path', { d: 'M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0' }],
         ['circle', { cx: '12', cy: '12', r: '3' }]
     ],
+    // message-circle.svg
+    messageCircle: [['path', { d: 'M7.9 20A9 9 0 1 0 4 16.1L2 22Z' }]],
+    // repeat-2.svg
+    repeat2: [
+        ['path', { d: 'm2 9 3-3 3 3' }],
+        ['path', { d: 'M13 18H7a2 2 0 0 1-2-2V6' }],
+        ['path', { d: 'm22 15-3 3-3-3' }],
+        ['path', { d: 'M11 6h6a2 2 0 0 1 2 2v10' }]
+    ],
     // chart-no-axes-column.svg
     chart: [
         ['line', { x1: '18', x2: '18', y1: '20', y2: '10' }],

@@ -98,6 +98,9 @@ const browserAPI = (() => {
                 },
                 onChanged: chrome.storage.onChanged
             },
+            extension: {
+                getViews: properties => chrome.extension?.getViews?.(properties) || []
+            },
             tabs: {
                 query: queryInfo => {
                     return new Promise((resolve, reject) => {
@@ -180,6 +183,9 @@ const browserAPI = (() => {
                 clear: () => Promise.resolve()
             },
             onChanged: { addListener: () => {} }
+        },
+        extension: {
+            getViews: () => []
         },
         tabs: {
             query: () => Promise.resolve([]),

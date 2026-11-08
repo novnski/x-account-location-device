@@ -2,6 +2,20 @@
 
 All notable changes to X-Posed will be documented in this file.
 
+## [Unreleased]
+
+## [4.4.0] - 2026-11-08
+
+### Improvements
+
+- **Filter profiles that follow your account:** Create and name saved filter setups, switch between them from the popup or Blocking settings, and let each X account remember its selection. Open settings and the popup stay in sync in both directions, including when the popup opens over Settings. Backups include every profile and saved account selection. Existing filters become **Default**, while appearance preferences and the account cache stay shared ([#83](https://github.com/xaitax/x-account-location-device/issues/83)).
+- **Account context in Chat:** Country flags, device icons and account cards now work in one-to-one chat headers and identifiable inbox rows. Message requests use verified account-ID mappings when available; unknown senders stay unmarked until identified. Uses the existing cached account lookups and passively reads X's public chat-user response, without extra identity requests ([#84](https://github.com/xaitax/x-account-location-device/issues/84)).
+- **Post cards worth sharing:** A redesigned capture puts the post first, with a larger author picture, cleaner typography and our familiar Graphite-and-mint styling in both light and dark themes. Paragraphs, emoji, long text and source links wrap naturally, with up to four photos included without cropping. Real flags and device icons sit in a rose-accented account-context strip, including any location warning. Source links use handle-independent post URLs, so they keep referencing the same post after an account changes its username ([#82](https://github.com/xaitax/x-account-location-device/issues/82)). Separate post and capture times, and a subtle X-Posed signature keep the context intact. Copy, save and share using the same familiar controls, without additional account lookups.
+
+### Compatibility
+
+X is [gradually rolling out a rebuilt website](https://blog.x.com/en/engineering/rebuilding-the-global-town-square-from-scratch). Compatibility with the new signed-in experience has not yet been fully verified, and some X-Posed features may temporarily be affected as accounts move over. I’ll start adapting the extension as soon as I can access and test it. [Issue #85](https://github.com/xaitax/x-account-location-device/issues/85) tracks the discussion; its logged-out observations do not confirm every signed-in feature is affected.
+
 ## [4.3.0] - 2026-10-17
 
 Quick filters where you need them, and account cards worth sharing.

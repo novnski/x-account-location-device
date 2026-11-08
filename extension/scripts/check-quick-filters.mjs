@@ -390,10 +390,11 @@ await check('Reused-handle identity changes erase old passive bio/count/link evi
 
 await check('Production profile listener rederives account-only filters and syncs open quick controls on native identity changes', () => {
     clearProfiles();
-    const listeners = new Map(), passes = [], f = filters({}, { blockedAccounts: new Set([ACCOUNT_ID]) });
+    const listeners = new Map(), passes = [], chatIdentities = [], f = filters({}, { blockedAccounts: new Set([ACCOUNT_ID]) });
     let controlSyncs = 0;
     const context = vm.createContext({
         settingsLoaded: true, isEnabled: true, isCleanedUp: false, settings: f.settings, filterSets: f,
+        chatBadges: { remember: users => chatIdentities.push(...users) },
         PROFILE_LIMITS, profilePatchFromWire, setProfile, getProfile, clearProfiles,
         ACCOUNT_COUNT_FILTERS, isAccountCountThreshold, matchesAccountCount,
         hovercard: { syncFilters: () => { controlSyncs++; } },
@@ -407,6 +408,7 @@ await check('Production profile listener rederives account-only filters and sync
     assert.deepEqual(passes, [['alice']]);
     assert.equal(controlSyncs, 1);
     assert.equal(getProfile('alice').userId, ACCOUNT_ID);
+    assert.deepEqual(JSON.parse(JSON.stringify(chatIdentities)), [{ u: 'alice', i: ACCOUNT_ID }], 'Existing public identities also resolve chat rows');
     relay([{ u: 'alice', i: ACCOUNT_ID }]);
     assert.deepEqual(passes, [['alice']], 'Unchanged identity alone does not reprocess every post');
     relay([{ u: 'alice', i: OTHER_ID }]);

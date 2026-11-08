@@ -276,7 +276,7 @@ export function updateBadgeInfo(badge, screenName, info) {
  * @param {string} [displayName] - This author's visible name, extracted before badge insertion.
  * @param {Object|null} [displayNamePresentation] - Local, validated name artwork and font source.
  */
-export function createBadge(element, screenName, info, isUserCell, settings, debug, csrfToken = null, effectiveCountry = null, displayName = '', displayNamePresentation = null) {
+export function createBadge(element, screenName, info, isUserCell, settings, debug, csrfToken = null, effectiveCountry = null, displayName = '', displayNamePresentation = null, placement = null) {
     const existingBadge = element.querySelector(`.${CSS_CLASSES.INFO_BADGE}`);
     if (existingBadge) {
         updateBadgeInfo(existingBadge, screenName, info);
@@ -403,9 +403,9 @@ export function createBadge(element, screenName, info, isUserCell, settings, deb
     if (hint && (settings.showCaptureButton === false || isUserCell)) badge.appendChild(makeSep());
     if (hint) badge.appendChild(hint);
 
-    let insertionPoint = isUserCell
+    let insertionPoint = placement || (isUserCell
         ? findUserCellInsertionPoint(element, screenName)
-        : findInsertionPoint(element, screenName);
+        : findInsertionPoint(element, screenName));
 
     // Keep our native controls outside X's profile links. Some UserCell layouts
     // return a handle span inside an anchor as their insertion point.
@@ -718,6 +718,7 @@ async function showBlockerModal(blockedCountries, blockedRegions, sendMessage, M
             new Set(state[source.field] || ({ blockedCountries, blockedRegions })[source.field] || [])])),
         settings: state.settings || sidebarSettings,
         stateRevisions: state.stateRevisions || {},
+        profileClient: state.profileClient,
         ...Object.fromEntries(FILTER_SOURCES.map(source => [source.callback,
             makeSetHandler(source.set, source.valueKey)])),
         onSettingsChange: payload => sendMessage({ type: MESSAGE_TYPES.SET_SETTINGS, payload }),

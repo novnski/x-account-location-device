@@ -17,6 +17,14 @@ import { apiClient, API_ERROR_CODES } from './api-client.js';
 import { calculateStatistics } from '../shared/utils.js';
 import cloudCache from './cloud-cache.js';
 import { filterStatistics } from './filter-statistics.js';
+import { ProfileStore } from './profile-store.js';
+import { PROFILE_MESSAGES, PROFILE_SETTING_KEYS, profileSettings } from '../shared/profiles.js';
+
+const profileStore = new ProfileStore(browserAPI.storage.local, {
+    getSettings: () => settings.get(),
+    getFilters: () => Object.fromEntries(FILTER_SOURCES.map(source => [source.field, filterStores[source.field].getAll()])),
+    getGlobalRevision: () => settings.revision
+});
 
 // Track initialization state
 let initialized = false;
@@ -40,6 +48,7 @@ async function initialize() {
         console.log(`🚀 X-Posed v${VERSION} Background Worker starting...`);
         try {
             await initializeStorage();
+            await profileStore.load();
             await cloudCache.init();
 
             const storedHeaders = headersStorage.get();
@@ -72,6 +81,10 @@ async function handleMessage(message, _sender) {
     const { type, payload } = message;
 
     try {
+        if (Object.values(PROFILE_MESSAGES).includes(type) || Object.hasOwn(message, 'profileContext')) {
+            const response = await handleProfileMessage(message);
+            if (response !== undefined) return response;
+        }
         const filter = FILTER_SOURCES.find(source => source.get === type || source.set === type);
         if (filter) {
             const store = filterStores[filter.field];
@@ -169,6 +182,172 @@ async function handleMessage(message, _sender) {
     }
 }
 
+function profileContext(message, { fallbackMissing = false } = {}) {
+    const input = message.profileContext;
+    if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input))) {
+        throw new TypeError('Invalid profile context.');
+    }
+    try {
+        return profileStore.context(input?.accountId ?? null, input?.profileId ?? null);
+    } catch (error) {
+        // A bookmarked options URL can outlive a deleted profile. Reads may
+        // recover to the remembered selection; writes keep their exact target.
+        if (fallbackMissing && error.code === 'PROFILE_NOT_FOUND') return profileStore.context(input?.accountId ?? null);
+        throw error;
+    }
+}
+
+function publishProfileCatalog() {
+    broadcastToAll({ type: PROFILE_MESSAGES.PROFILE_CATALOG_UPDATED, ...profileStore.catalog() });
+}
+
+function publishProfileState(profileId) {
+    broadcastToAll({ type: PROFILE_MESSAGES.PROFILE_STATE_UPDATED, profileId,
+        snapshot: profileStore.snapshot({ accountId: null, profileId }) });
+}
+
+function publishAllProfileStates() {
+    broadcastToAll(profileStore.catalog().profiles.map(({ id }) => ({
+        type: PROFILE_MESSAGES.PROFILE_STATE_UPDATED, profileId: id,
+        snapshot: profileStore.snapshot({ accountId: null, profileId: id })
+    })));
+}
+
+/** Profile-bound operations never replace another account's live filter stores. */
+async function handleProfileMessage(message) {
+    const { type, payload = {} } = message;
+    const context = profileContext(message, { fallbackMissing: type === PROFILE_MESSAGES.GET_PROFILE_CONTEXT });
+    const { accountId, profileId } = context;
+    if (type === PROFILE_MESSAGES.GET_PROFILE_CONTEXT) return profileStore.response(context);
+    if (type === PROFILE_MESSAGES.EXPORT_PROFILES) return { success: true, data: profileStore.export() };
+    if (type === PROFILE_MESSAGES.SELECT_PROFILE) {
+        const next = profileStore.context(accountId, payload.profileId);
+        await profileStore.select(accountId, next.profileId);
+        publishProfileCatalog();
+        return profileStore.response(next);
+    }
+    if (type === PROFILE_MESSAGES.CREATE_PROFILE) {
+        const id = await profileStore.create(accountId, payload.name);
+        publishProfileCatalog();
+        return profileStore.response({ accountId, profileId: id });
+    }
+    if (type === PROFILE_MESSAGES.RENAME_PROFILE || type === PROFILE_MESSAGES.DELETE_PROFILE) {
+        const target = profileStore.context(accountId, payload.profileId ?? profileId);
+        if (type === PROFILE_MESSAGES.RENAME_PROFILE) await profileStore.rename(target, payload.name);
+        else await profileStore.remove(target);
+        publishProfileCatalog();
+        const selected = type === PROFILE_MESSAGES.DELETE_PROFILE && target.profileId === profileId
+            ? profileStore.context(accountId) : context;
+        return profileStore.response(selected);
+    }
+    const filter = FILTER_SOURCES.find(source => source.get === type || source.set === type);
+    if (filter) {
+        if (type === filter.set) {
+            await profileStore.updateFilter(context, filter, {
+                action: payload.action, value: payload[filter.valueKey], values: payload[filter.valuesKey]
+            });
+            publishProfileState(profileId);
+        }
+        const snapshot = profileStore.snapshot(context);
+        const data = snapshot.filters[filter.field];
+        return { success: true, profileId, data, size: data.length, snapshot,
+            revision: snapshot.revision, globalRevision: snapshot.globalRevision };
+    }
+    if (type === MESSAGE_TYPES.GET_SETTINGS) {
+        const snapshot = profileStore.snapshot(context);
+        return { success: true, profileId, data: snapshot.settings, snapshot,
+            revision: snapshot.revision, globalRevision: snapshot.globalRevision };
+    }
+    if (type === MESSAGE_TYPES.SET_SETTINGS) {
+        let globalChange = false;
+        try {
+            if (Object.hasOwn(payload, 'regionCountrySelection')) {
+                if (Object.keys(payload).length !== 1 || !payload.regionCountrySelection ||
+                    typeof payload.regionCountrySelection !== 'object' || Array.isArray(payload.regionCountrySelection)) {
+                    throw new TypeError('Invalid region-country update.');
+                }
+                await profileStore.updateRegion(context, payload.regionCountrySelection);
+            } else {
+                const validated = prepareBackupImport({ settings: payload }).settings;
+                const local = profileSettings(validated, { partial: true });
+                const global = Object.fromEntries(Object.entries(validated).filter(([key]) => !PROFILE_SETTING_KEYS.includes(key)));
+                // Validate both parts before the first persistence operation.
+                if (Object.keys(global).length) {
+                    const previousRevision = settings.revision;
+                    await settings.set(global);
+                    globalChange = previousRevision !== settings.revision;
+                }
+                if (Object.keys(local).length) await profileStore.updateSettings(context, local);
+            }
+        } finally {
+            if (globalChange) publishAllProfileStates();
+        }
+        if (!globalChange) publishProfileState(profileId);
+        const snapshot = profileStore.snapshot(context);
+        return { success: true, profileId, data: snapshot.settings, snapshot,
+            revision: snapshot.revision, globalRevision: snapshot.globalRevision,
+            ...(Object.hasOwn(payload, 'regionCountrySelection') ? {
+                blockedRegions: snapshot.filters.blockedRegions, regionsRevision: snapshot.revision
+            } : {}) };
+    }
+    if (type === MESSAGE_TYPES.OPEN_OPTIONS_PAGE) {
+        const query = new URLSearchParams({ profileId });
+        if (accountId) query.set('accountId', accountId);
+        await browserAPI.tabs.create({ url: browserAPI.runtime.getURL('options/options.html') + '?' + query });
+        return { success: true };
+    }
+    if (type === MESSAGE_TYPES.FETCH_USER_INFO) {
+        return handleFetchUserInfo({ ...payload, pageContextRequired: true, accountId,
+            needsAffiliation: profileStore.snapshot(context).filters.blockedAffiliations.length > 0 });
+    }
+    if (type === MESSAGE_TYPES.FETCH_HOVERCARD_INFO) {
+        return handleFetchHovercardInfo({ ...payload, pageContextRequired: true });
+    }
+    if (type === MESSAGE_TYPES.SET_CACHE) {
+        const response = handleSetCache(payload);
+        const accepted = payload.screenName ? userCache.get(payload.screenName) : null;
+        if (response.success && payload.fromPage === true && accepted?.fromCloud === false &&
+            accepted.timestamp === payload.data?.timestamp && cloudCache.isEnabled() && cloudCache.isConfigured()) {
+            cloudCache.contribute(payload.screenName, accepted);
+        }
+        return response;
+    }
+    if (type === MESSAGE_TYPES.IMPORT_DATA) return handleProfileImportData(payload, context);
+    return undefined;
+}
+
+/** Old backups restore into the selected profile; new backups retain all profiles. */
+async function handleProfileImportData(input, context) {
+    const payload = prepareBackupImport(input);
+    const localSettings = payload.settings ? profileSettings(payload.settings, { partial: true }) : {};
+    const globalSettings = Object.fromEntries(Object.entries(payload.settings || {}).filter(([key]) => !PROFILE_SETTING_KEYS.includes(key)));
+    const filters = Object.fromEntries(FILTER_SOURCES.filter(source => Object.hasOwn(payload, source.field))
+        .map(source => [source.field, payload[source.field]]));
+    // Validate all supplied filter rules before any write, even for a legacy backup.
+    for (const source of FILTER_SOURCES) {
+        if (filters[source.field]?.some(value => !filterStores[source.field].normalize(value))) {
+            throw new TypeError(`Backup ${source.field} contains an invalid filter.`);
+        }
+    }
+    if (payload.profiles) await profileStore.restore(payload.profiles);
+    else await profileStore.importProfile(context, { settings: localSettings, filters });
+    const globalPayload = Object.fromEntries(['theme', 'cloudCacheEnabled', 'cache'].filter(key => Object.hasOwn(payload, key))
+        .map(key => [key, payload[key]]));
+    if (Object.keys(globalSettings).length) globalPayload.settings = globalSettings;
+    let response = { success: true };
+    try {
+        if (Object.keys(globalPayload).length) response = await handleImportData(globalPayload);
+    } finally {
+        publishProfileCatalog();
+        publishAllProfileStates();
+    }
+    return { ...response,
+        importedSettings: Object.hasOwn(payload, 'settings'), importedProfiles: payload.profiles?.profiles.length || 0,
+        ...Object.fromEntries(FILTER_SOURCES.map(({ field }) => [
+            `imported${field[0].toUpperCase()}${field.slice(1)}`, payload.profiles ? 0 : (filters[field]?.length || 0)
+        ])) };
+}
+
 /**
  * Check if a user is in the "not found" cache
  */
@@ -229,9 +408,9 @@ function cacheNotFound(screenName) {
  * @param {{meta?: {affiliate?: object|null, affiliateUsername?: string|null}}|null|undefined} data
  * @returns {boolean}
  */
-function wantsRicherRecord(data) {
+function wantsRicherRecord(data, needsAffiliation = blockedAffiliations.size > 0) {
     // Not filtering on affiliation → the missing field is irrelevant, never spend a lookup.
-    if (blockedAffiliations.size === 0) return false;
+    if (!needsAffiliation) return false;
 
     return !affiliationWasChecked(data?.meta);
 }
@@ -245,7 +424,8 @@ function wantsRicherRecord(data) {
 const inFlightUserFetches = new Map();
 
 function handleFetchUserInfo(args) {
-    const key = (args?.screenName || '').toLowerCase();
+    const name = (args?.screenName || '').toLowerCase();
+    const key = args?.pageContextRequired ? `${args.accountId || 'page'}:${args.needsAffiliation ? 1 : 0}:${name}` : name;
     if (!key) return _resolveUserInfo(args);
 
     const existing = inFlightUserFetches.get(key);
@@ -261,13 +441,13 @@ function handleFetchUserInfo(args) {
 /**
  * Resolve user info: not-found cache → local cache → cloud cache → X API.
  */
-async function _resolveUserInfo({ screenName, csrfToken }) {
+async function _resolveUserInfo({ screenName, csrfToken, pageContextRequired = false, needsAffiliation }) {
     // Issue #23 diagnostic: trace which source (local/cloud/api) supplied the country and
     // how stale a cloud hit was, so the next flag/pop-up mismatch can be pinned down.
     const debug23 = settings.get('debugMode') === true;
 
     // 0. Check not-found cache first (avoid repeat API calls for non-existent users)
-    if (isNotFoundCached(screenName)) {
+    if (!pageContextRequired && isNotFoundCached(screenName)) {
         return {
             success: false,
             error: 'User not found (cached)',
@@ -279,7 +459,7 @@ async function _resolveUserInfo({ screenName, csrfToken }) {
     // 1. Check local cache first
     let localEntry = userCache.get(screenName) || null;
     if (localEntry) {
-        if (!wantsRicherRecord(localEntry)) {
+        if (!wantsRicherRecord(localEntry, needsAffiliation)) {
             if (debug23) console.log(`[xposed#23] @${screenName} source=local loc=${localEntry?.location}`);
             return {
                 success: true,
@@ -305,7 +485,7 @@ async function _resolveUserInfo({ screenName, csrfToken }) {
                 // A hover may have filled/enriched RAM while the cloud lookup waited.
                 // Never choose against the stale pre-await cache snapshot.
                 localEntry = userCache.get(screenName) || null;
-                const cloudIsRicher = !wantsRicherRecord(cloudData);
+                const cloudIsRicher = !wantsRicherRecord(cloudData, needsAffiliation);
                 const best = (cloudIsRicher || !localEntry) ? cloudData : localEntry;
 
                 if (debug23) console.log(`[xposed#23] @${screenName} source=cloud loc=${cloudData?.location} ageMs=${Date.now() - (cloudData?.timestamp || 0)}`);
@@ -343,6 +523,9 @@ async function _resolveUserInfo({ screenName, csrfToken }) {
             source: 'local'
         };
     }
+
+    // Container/account credentials belong to the requesting page, never another tab.
+    if (pageContextRequired) return { success: false, code: 'PAGE_CONTEXT_REQUIRED' };
 
     // 3. Fetch from X API (genuine cache miss only)
     try {
@@ -403,7 +586,7 @@ async function _resolveUserInfo({ screenName, csrfToken }) {
  * 401. Uncached users still go live and surface a clear, distinct error in the
  * hovercard if auth fails.
  */
-async function handleFetchHovercardInfo({ screenName, csrfToken }) {
+async function handleFetchHovercardInfo({ screenName, csrfToken, pageContextRequired = false }) {
     // Serve a cached entry first — but ONLY if it carries the FULL hovercard `meta`
     // (i.e. it came from a live X API fetch). Cloud-sourced entries carry just the
     // shared subset and are flagged `meta.partial`, so they fall through to a live
@@ -416,6 +599,8 @@ async function handleFetchHovercardInfo({ screenName, csrfToken }) {
             return { success: true, data: cached, source: 'local' };
         }
     }
+
+    if (pageContextRequired) return { success: false, code: 'PAGE_CONTEXT_REQUIRED' };
 
     try {
         const data = {
@@ -1117,10 +1302,16 @@ if (browserAPI.commands?.onCommand) {
         if (command !== 'toggle-blocking-mode') return;
         try {
             await initialize();
-            // Compute the toggle inside the storage queue, so rapid commands do
-            // not both read and write the same stale boolean.
-            await settings.toggle('highlightBlockedTweets');
-            publishSettings(settings.snapshot());
+            const tabs = await browserAPI.tabs.query({ active: true, currentWindow: true });
+            let selected = null;
+            if (tabs[0]?.id !== undefined) {
+                selected = await browserAPI.tabs.sendMessage(tabs[0].id, { type: PROFILE_MESSAGES.GET_PROFILE_CONTEXT }).catch(() => null);
+            }
+            const context = profileStore.context(selected?.accountId ?? null, selected?.profileId ?? null);
+            // Toggle within the profile queue, retaining the account captured
+            // when the command began even if the reader switches tabs meanwhile.
+            await profileStore.toggleSetting(context, 'highlightBlockedTweets');
+            publishProfileState(context.profileId);
         } catch (error) {
             console.error('Could not switch blocking mode:', error);
         }

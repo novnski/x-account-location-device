@@ -36,7 +36,9 @@ function squareAvatar(image, container) {
 export function resolveCardAvatar({ anchor, screenName, info, profile } = {}) {
     if (typeof screenName !== 'string' || !/^[a-zA-Z0-9_]{1,15}(?![\s\S])/.test(screenName)) return null;
     const handle = screenName.toLowerCase();
-    const owner = anchor?.closest?.('[data-x-screen-name]') || anchor?.closest?.(SELECTORS.USER_CELL);
+    const chatOwner = anchor?.closest?.('[data-x-chat-handle]');
+    if (chatOwner && chatOwner.dataset.xChatHandle?.toLowerCase() !== handle) return null;
+    const owner = anchor?.closest?.('[data-x-screen-name]') || anchor?.closest?.(SELECTORS.USER_CELL) || chatOwner;
     if (anchor && (!anchor.isConnected || (owner?.dataset.xScreenName &&
         owner.dataset.xScreenName.toLowerCase() !== handle))) return null;
 
@@ -46,6 +48,14 @@ export function resolveCardAvatar({ anchor, screenName, info, profile } = {}) {
     const rawShape = info?.meta?.profileImageShape;
     const metadataShape = compatible && typeof rawShape === 'string' && rawShape.toLowerCase() === 'square'
         ? 'square' : 'circle';
+    if (chatOwner && owner === chatOwner) {
+        const scope = chatOwner.querySelector('[data-inbox-row]') || chatOwner.querySelector('a[href]');
+        const image = scope?.querySelector('img');
+        if (image && visibleImage(image)) {
+            const url = normalizeAvatarUrl(image.currentSrc || image.getAttribute('src'));
+            if (url) return { url, shape: metadataShape };
+        }
+    }
     const cell = anchor?.closest?.(SELECTORS.USER_CELL) || null;
     const article = anchor?.closest?.(SELECTORS.TWEET) || null;
     const quote = article ? quoteCardOf(owner || anchor, article) : null;

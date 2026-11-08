@@ -899,6 +899,7 @@ class HovercardController {
 
         // Coalesce scroll/resize reposition work into a single rAF tick.
         this._repositionRafId = null;
+        this._anchorRoot = null;
 
         this._handleCardEnter = this._handleCardEnter.bind(this);
         this._handleCardLeave = this._handleCardLeave.bind(this);
@@ -910,10 +911,39 @@ class HovercardController {
         this._handleHoverIntentCancel = this._handleHoverIntentCancel.bind(this);
     }
 
+    /** Focus in Chat's shadow tree is retargeted to its host at document level. */
+    _hasFocus(container) {
+        if (!container) return false;
+        const root = container.getRootNode?.();
+        return container.contains(root?.activeElement || document.activeElement);
+    }
+
+    _shadowRoot(anchor) {
+        const root = anchor?.getRootNode?.();
+        return root?.host && typeof root.addEventListener === 'function' ? root : null;
+    }
+
+    /** Native shadow-tree scrolling never reaches the window capture listener. */
+    _setAnchorRoot(root) {
+        if (root === this._anchorRoot) return;
+        this._anchorRoot?.removeEventListener('scroll', this._handleScroll, true);
+        this._anchorRoot = root;
+        this._anchorRoot?.addEventListener('scroll', this._handleScroll, true);
+    }
+
     /** Private content-session state: never fetch settings or expose a page-global mutation API. */
     configureFilters(context) {
         this.filterContext = typeof context?.getState === 'function' && typeof context?.sendMessage === 'function'
             ? context : null;
+    }
+
+    /** Retire actions when the filter context changes; public account data stays warm. */
+    resetProfileContext() {
+        this.generation++;
+        this.hide();
+        this.inFlight.clear();
+        this.allowlistWrites.clear();
+        this.quickFilterWrites.clear();
     }
 
     syncFilters() {
@@ -1000,18 +1030,18 @@ class HovercardController {
         // Passing another badge must not interrupt a pinned card, a keyboard
         // reader or an explicit Copy/Save operation. Clicking can still switch.
         if (!anchorEl?.isConnected || document.hidden || this._clickMode || this.imageState?.pending || this.quickFilterState?.pending ||
-            (visible && (this.card.contains(document.activeElement) ||
-                this.currentAnchor?.contains(document.activeElement)))) return;
+            (visible && (this._hasFocus(this.card) || this._hasFocus(this.currentAnchor)))) return;
 
         this._clearHideTimeout();
-        const intent = { anchor: anchorEl, options, generation: this.generation, timer: null };
+        const intent = { anchor: anchorEl, options, generation: this.generation, timer: null,
+            root: this._shadowRoot(anchorEl) };
         this.hoverIntent = intent;
         intent.timer = setTimeout(() => {
             if (this.hoverIntent !== intent) return;
             this._cancelHoverIntent();
             if (intent.generation !== this.generation || !anchorEl.isConnected || document.hidden ||
                 !anchorEl.matches(':hover') || this._clickMode || this.imageState?.pending || this.quickFilterState?.pending ||
-                this.card?.contains(document.activeElement) || this.currentAnchor?.contains(document.activeElement)) {
+                this._hasFocus(this.card) || this._hasFocus(this.currentAnchor)) {
                 this.hideSoon();
                 return;
             }
@@ -1027,6 +1057,7 @@ class HovercardController {
         window.addEventListener('scroll', this._handleHoverIntentCancel, true);
         window.addEventListener('resize', this._handleHoverIntentCancel, true);
         window.addEventListener('blur', this._handleHoverIntentCancel);
+        intent.root?.addEventListener('scroll', this._handleHoverIntentCancel, true);
     }
 
     _cancelHoverIntent(anchorEl = null) {
@@ -1040,6 +1071,7 @@ class HovercardController {
         window.removeEventListener('scroll', this._handleHoverIntentCancel, true);
         window.removeEventListener('resize', this._handleHoverIntentCancel, true);
         window.removeEventListener('blur', this._handleHoverIntentCancel);
+        intent.root?.removeEventListener('scroll', this._handleHoverIntentCancel, true);
     }
 
     _handleHoverIntentCancel(event) {
@@ -1147,6 +1179,7 @@ class HovercardController {
         }
 
         // Reposition on scroll/resize while visible
+        this._setAnchorRoot(this._shadowRoot(anchorEl));
         window.addEventListener('scroll', this._handleScroll, true);
         window.addEventListener('resize', this._handleScroll, true);
         document.addEventListener('keydown', this._handleKeyDown, true);
@@ -1157,8 +1190,8 @@ class HovercardController {
     }
 
     hideSoon(delayMs = 120) {
-        if (this.hoverIntent || this._clickMode || this.imageState?.pending || this.quickFilterState?.pending || this.card?.contains(document.activeElement) ||
-            this.currentAnchor?.contains(document.activeElement)) return;
+        if (this.hoverIntent || this._clickMode || this.imageState?.pending || this.quickFilterState?.pending ||
+            this._hasFocus(this.card) || this._hasFocus(this.currentAnchor)) return;
         if (this.hideTimeout) clearTimeout(this.hideTimeout);
         this.hideTimeout = setTimeout(() => this.hide(), delayMs);
     }
@@ -1170,6 +1203,7 @@ class HovercardController {
         this._disposeImageState();
         this._disposeQuickFilters();
         this._clearHideTimeout();
+        this._setAnchorRoot(null);
 
         if (this._repositionRafId !== null) {
             cancelAnimationFrame(this._repositionRafId);
@@ -1195,7 +1229,7 @@ class HovercardController {
 
     _handleClose() {
         const detailsButton = this.currentAnchor?.querySelector('.x-badge-details');
-        const returnFocus = this.card?.contains(document.activeElement);
+        const returnFocus = this._hasFocus(this.card);
         this.hide();
         if (returnFocus && detailsButton?.isConnected) detailsButton.focus({ preventScroll: true });
     }
@@ -1204,13 +1238,15 @@ class HovercardController {
     replaceAnchor(previous, replacement, focusSelector = null) {
         this._cancelHoverIntent(previous);
         if (!previous || this.currentAnchor !== previous) return;
-        const author = replacement?.closest('[data-x-screen-name]')?.dataset.xScreenName?.toLowerCase();
+        const author = (replacement?.closest('[data-x-screen-name]')?.dataset.xScreenName ||
+            replacement?.closest('[data-x-chat-handle]')?.dataset.xChatHandle)?.toLowerCase();
         if (!replacement?.isConnected || author !== this.currentScreenName) {
             this.hide();
             return;
         }
         previous.querySelector('.x-badge-details')?.setAttribute('aria-expanded', 'false');
         this.currentAnchor = replacement;
+        this._setAnchorRoot(this._shadowRoot(replacement));
         replacement.querySelector('.x-badge-details')?.setAttribute('aria-expanded', 'true');
         this._clearHideTimeout();
         if (focusSelector) replacement.querySelector(focusSelector)?.focus({ preventScroll: true });
@@ -1220,7 +1256,7 @@ class HovercardController {
     _handleKeyDown(event) {
         if (event.key !== 'Escape' || !this.card?.classList.contains('x-posed-hovercard-visible')) return;
         if (this.actionTooltip?.dismiss()) {
-            if (this.card.contains(document.activeElement) || this.currentAnchor?.contains(document.activeElement)) {
+            if (this._hasFocus(this.card) || this._hasFocus(this.currentAnchor)) {
                 event.preventDefault();
                 event.stopPropagation();
             }
@@ -1235,7 +1271,7 @@ class HovercardController {
         // A pointer-opened card must not consume Escape intended for an X
         // input or another dialog. Keyboard interaction inside our own card or
         // badge still closes it and restores focus without dismissing X too.
-        if (this.card.contains(document.activeElement) || this.currentAnchor?.contains(document.activeElement)) {
+        if (this._hasFocus(this.card) || this._hasFocus(this.currentAnchor)) {
             event.preventDefault();
             event.stopPropagation();
         }
@@ -1259,19 +1295,19 @@ class HovercardController {
         queueMicrotask(() => {
             if (this.generation !== generation || this.viewId !== viewId) return;
             if (!this.card?.classList.contains('x-posed-hovercard-visible')) return;
-            if (!this.card.contains(document.activeElement) &&
-                !this.currentAnchor?.contains(document.activeElement)) this.hideSoon();
+            if (!this._hasFocus(this.card) && !this._hasFocus(this.currentAnchor)) this.hideSoon();
         });
     }
 
     _handleOutsideTap(e) {
         if (!this.card) return;
-        const t = e.target;
-        if (this.card.contains(t)) {
-            if (!t.closest('.x-posed-warning-why, .x-posed-warning-help')) setLocationWarningHelp(this.card, false);
+        const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+        const t = path[0] || e.target;
+        if (this.card.contains(t) || path.includes(this.card)) {
+            if (!t.closest?.('.x-posed-warning-why, .x-posed-warning-help')) setLocationWarningHelp(this.card, false);
             return;
         }
-        if (this.currentAnchor && this.currentAnchor.contains(t)) return;
+        if (this.currentAnchor && (this.currentAnchor.contains(t) || path.includes(this.currentAnchor))) return;
         this.hide();
     }
 
@@ -1499,7 +1535,8 @@ class HovercardController {
                 try { await pendingWrite; } catch { /* Read the actual state after a failed write too. */ }
                 if (!this._isCurrentAllowlist(state)) return;
             }
-            const response = await browserAPI.runtime.sendMessage({ type: MESSAGE_TYPES.GET_ALLOWED_USERS });
+            const send = this.filterContext?.sendMessage || (message => browserAPI.runtime.sendMessage(message));
+            const response = await send({ type: MESSAGE_TYPES.GET_ALLOWED_USERS });
             if (!this._isCurrentAllowlist(state)) return;
             if (!response?.success || !Array.isArray(response.data)) throw new Error('Allowlist unavailable');
             state.allowed = response.data.some(handle => typeof handle === 'string' && handle.toLowerCase() === state.handle);
@@ -1524,7 +1561,8 @@ class HovercardController {
         try {
             // Send an explicit operation for the captured handle. Never replace the list:
             // another tab may have edited it since this card's initial membership check.
-            const write = browserAPI.runtime.sendMessage({
+            const send = this.filterContext?.sendMessage || (message => browserAPI.runtime.sendMessage(message));
+            const write = send({
                 type: MESSAGE_TYPES.SET_ALLOWED_USERS,
                 payload: { action: shouldAllow ? 'add' : 'remove', username: state.handle }
             });
@@ -1558,10 +1596,20 @@ class HovercardController {
         const fallbackName = initialInfo?.meta?.name || '';
 
         if (!this.inFlight.has(key)) {
-            const p = browserAPI.runtime
-                .sendMessage({
-                    type: MESSAGE_TYPES.FETCH_HOVERCARD_INFO,
-                    payload: { screenName, csrfToken }
+            const context = this.filterContext;
+            const send = context?.sendMessage || (message => browserAPI.runtime.sendMessage(message));
+            const p = send({
+                type: MESSAGE_TYPES.FETCH_HOVERCARD_INFO,
+                payload: { screenName, csrfToken }
+            })
+                .then(async result => {
+                    if (result?.code !== 'PAGE_CONTEXT_REQUIRED' || !context?.fetchUserInfoViaPage) return result;
+                    const page = await context.fetchUserInfoViaPage(screenName, { fullMetadata: true });
+                    if (generation !== this.generation) return { success: false, code: 'CANCELLED' };
+                    if (!page?.success || !page.data) return page;
+                    const data = { ...page.data, timestamp: Date.now(), fromCloud: false };
+                    await send({ type: MESSAGE_TYPES.SET_CACHE, payload: { screenName, data, fromPage: true } });
+                    return { success: true, data, source: 'page' };
                 })
                 .catch(() => ({ success: false, error: 'Couldn’t load account details. Try opening them again.' }))
                 .finally(() => {

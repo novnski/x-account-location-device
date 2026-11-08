@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="../styles/graphite-theme.css">
     <link rel="stylesheet" href="../styles/graphite.css">
     <link rel="stylesheet" href="../styles/badges.css">
+    <link rel="stylesheet" href="../styles/profiles.css">
     <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -15,25 +16,38 @@
         <div class="whats-new-banner" id="whats-new-banner" role="region" aria-labelledby="whats-new-title" style="display: none;">
             <button type="button" class="whats-new-close" id="whats-new-close" aria-label="Dismiss what's new" data-settings-icon="close"></button>
             <div class="whats-new-content">
-                <h2 id="whats-new-title"><span id="release-heading">What's new in X-Posed</span> <span data-release-version>4.3.0</span></h2>
-                <p class="whats-new-subtitle">Your feed. Your rules. Now a little easier.</p>
+                <h2 id="whats-new-title"><span id="release-heading">What's new in X-Posed</span> <span data-release-version>4.4.0</span></h2>
+                <p class="whats-new-subtitle">Switch your filters. Take the context with you.</p>
 
                 <div class="whats-new-features">
                     <section class="whats-new-feature" aria-labelledby="whats-new-filters-title">
-                        <h3 id="whats-new-filters-title"><span class="settings-icon" data-settings-icon="shield" aria-hidden="true"></span>See it. Filter it.</h3>
-                        <p>Open a card on X and filter the account, country or region in a click. Your <strong>Hide or Highlight</strong> choice applies, and account filters keep working even if the handle changes.</p>
+                        <h3 id="whats-new-filters-title"><span class="settings-icon" data-settings-icon="shield" aria-hidden="true"></span>Your feed. Your profiles.</h3>
+                        <p>Name a set of filters for work, personal browsing or anything else. Switch in a click, and each X account remembers its choice.</p>
                     </section>
 
-                    <section class="whats-new-feature whats-new-card-feature" aria-labelledby="whats-new-cards-title">
-                        <h3 id="whats-new-cards-title"><span class="settings-icon" data-settings-icon="copy" aria-hidden="true"></span>A card worth sharing.</h3>
-                        <p>Profile picture, location and the useful details, all in one tidy card. Use <strong>Copy</strong> to paste it into a chat, or <strong>Save</strong> to keep it for later.</p>
+                    <section class="whats-new-feature" aria-labelledby="whats-new-cards-title">
+                        <h3 id="whats-new-cards-title"><span class="settings-icon" data-settings-icon="copy" aria-hidden="true"></span>A post worth sharing.</h3>
+                        <p>Turn a post into a polished card with its text, photos, country and device details. Use <strong>Copy</strong> to share it, or <strong>Save</strong> to keep it.</p>
+                    </section>
+
+                    <section class="whats-new-feature" aria-labelledby="whats-new-chat-title">
+                        <h3 id="whats-new-chat-title"><span class="settings-icon" data-settings-icon="messageCircle" aria-hidden="true"></span>Context in your chats.</h3>
+                        <p>Country flags, devices and account cards now come to one-to-one chats. They appear wherever X-Posed can identify the account.</p>
                     </section>
                 </div>
 
                 <div class="whats-new-actions">
-                    <a href="#panel-general" class="btn btn-primary whats-new-open" data-target="panel-general">Continue to settings</a>
+                    <a href="#panel-blocking" class="btn btn-primary whats-new-open" data-target="panel-blocking">Try profiles</a>
                     <a href="https://github.com/xaitax/x-account-location-device/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer" class="whats-new-changelog">Full changelog &amp; credits</a>
                 </div>
+                <aside class="whats-new-notice" aria-labelledby="whats-new-redesign-title">
+                    <span class="settings-icon" data-settings-icon="infoCircle" aria-hidden="true"></span>
+                    <div>
+                        <h3 id="whats-new-redesign-title">A heads-up about X’s redesign</h3>
+                        <p>X is gradually rolling out a rebuilt website. Some X-Posed features may temporarily stop working as it reaches your account. I can’t fully test the new signed-in experience yet, but I’ll start adapting the extension as soon as it’s available to me.</p>
+                        <a href="https://blog.x.com/en/engineering/rebuilding-the-global-town-square-from-scratch" target="_blank" rel="noopener noreferrer">Read X’s announcement</a>
+                    </div>
+                </aside>
                 <aside class="whats-new-cta" aria-labelledby="whats-new-support-title">
                     <div class="whats-new-support-copy">
                         <h3 id="whats-new-support-title" class="whats-new-support-title">
@@ -442,7 +456,7 @@
                 </h2>
 
                 <div class="about-info">
-                    <p><strong>X-Posed</strong> v<span id="version">4.3.0</span></p>
+                    <p><strong>X-Posed</strong> v<span id="version">4.4.0</span></p>
                     <p class="text-muted">See where X users are located and what devices they use.</p>
                     
                     <div class="about-links">

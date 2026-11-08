@@ -9,6 +9,7 @@ import { ACCOUNT_COUNT_FILTERS, isAccountCountThreshold } from '../shared/accoun
 import { getRegionCountries, getRegionDescription, getIncludedRegionCountries, hasRegionCountrySelection } from '../shared/region-membership.js';
 import { flagImage } from './icons.js';
 import { dialogIcon as glyph } from './dialog-icons.js';
+import { createProfilePicker } from '../shared/profile-picker.js';
 
 const SOURCES = [
     { key: 'countries', title: 'Countries', label: 'Country', icon: 'globe', hint: 'Countries reported by X.' },
@@ -75,6 +76,10 @@ export function syncModalSettings(settings, revision) {
     activeDialog?.updateSettings(settings, revision);
 }
 
+export function syncModalProfile(snapshot, state) {
+    activeDialog?.updateProfile(snapshot, state);
+}
+
 function el(tag, className, text) {
     return createElement(tag, { ...(className ? { className } : {}), ...(text !== undefined ? { textContent: text } : {}) });
 }
@@ -120,6 +125,7 @@ export function mountBlockingSettings(container, config = {}) {
     return {
         updateList: surface.updateList,
         updateSettings: surface.updateSettings,
+        updateProfile: surface.updateProfile,
         navigate: surface.navigate,
         destroy: surface.close
     };
@@ -131,6 +137,8 @@ function createBlockingSurface(config, container = null) {
     const opener = document.activeElement;
     const sets = Object.fromEntries(SOURCES.map(source => [source.key, new Set(config[source.field] || [])]));
     const snapshots = createSnapshotTracker(config.stateRevisions);
+    let profileGeneration = 0;
+    let profileKey = JSON.stringify([config.profileClient?.state.accountId, config.profileClient?.state.profileId]);
     let settings = { ...config.settings };
     let closed = false;
     let statusText = 'Changes save automatically';
@@ -157,6 +165,8 @@ function createBlockingSurface(config, container = null) {
     title.tabIndex = -1;
     title.append(glyph('shield', 24), document.createTextNode('Blocking'));
     heading.append(title, el('p', 'xp-g-subtitle', 'Choose what appears in your feed.'));
+    const profilePicker = !embedded && config.profileClient ? createProfilePicker({ client: config.profileClient, manage: false }) : null;
+    if (profilePicker) heading.append(profilePicker.element);
     const mode = createBlockingModeControl({ id: 'x-modal-blocking-mode', settings,
         revision: config.stateRevisions?.[MESSAGE_TYPES.SETTINGS_UPDATED], onChange: changeSettings });
     header.append(heading, mode.element);
@@ -181,6 +191,11 @@ function createBlockingSurface(config, container = null) {
     if (!embedded) footer.append(footerActions);
     modal.append(header, tabs, body, footer);
     overlay?.append(modal);
+    const unsubscribeProfile = config.profileClient?.subscribe(state => {
+        const loading = state.pending || !state.ready;
+        body.inert = tabs.inert = mode.element.inert = loading;
+        body.setAttribute('aria-busy', loading ? 'true' : 'false');
+    });
 
     function setStatus(text, error = false) {
         if (closed) return;
@@ -193,6 +208,8 @@ function createBlockingSurface(config, container = null) {
     function close({ restoreFocus = true } = {}) {
         if (closed) return;
         closed = true;
+        unsubscribeProfile?.();
+        profilePicker?.dispose();
         if (!embedded) document.removeEventListener('keydown', handleKeydown, true);
         if (embedded) { modal.remove(); return; }
         overlay.remove();
@@ -203,6 +220,8 @@ function createBlockingSurface(config, container = null) {
 
     function handleKeydown(event) {
         if (event.key === 'Escape') {
+            // The profile menu owns the first Escape; keep its containing dialog open.
+            if (modal.querySelector('.xp-profile-select[aria-expanded="true"]')) return;
             event.preventDefault();
             event.stopPropagation();
             if (view.editor) navigate(view.tab); else close();
@@ -234,7 +253,37 @@ function createBlockingSurface(config, container = null) {
         render();
     }
 
+    function updateProfile(snapshot, state = {}) {
+        if (closed || !snapshot?.settings || !snapshot.filters) return;
+        const nextKey = JSON.stringify([state.accountId, state.profileId]);
+        if (nextKey !== profileKey) {
+            profileKey = nextKey;
+            profileGeneration++;
+            snapshots.reset();
+            pending.clear();
+            for (const key of Object.keys(drafts)) delete drafts[key];
+            expandedRegions.clear();
+            for (const key of Object.keys(regionQueries)) delete regionQueries[key];
+            view.editor = null;
+            view.clearKind = null;
+            view.query = view.catalogQuery = view.userQuery = '';
+            deferredFocusId = '';
+            statusText = 'Changes save automatically';
+            statusError = false;
+            mode.reset(snapshot.settings, snapshot.revision);
+        }
+        settings = { ...snapshot.settings };
+        for (const source of SOURCES) {
+            sets[source.key] = new Set(snapshot.filters[source.field] || []);
+            snapshots.accept(source.update, snapshot.revision);
+        }
+        snapshots.accept(MESSAGE_TYPES.SETTINGS_UPDATED, snapshot.revision);
+        mode.update(settings, snapshot.revision);
+        render();
+    }
+
     async function changeSettings(patch) {
+        const generation = profileGeneration;
         const key = 'settings';
         if (pending.has(key) || closed) return { success: false };
         pending.add(key);
@@ -243,21 +292,23 @@ function createBlockingSurface(config, container = null) {
         let response;
         try {
             response = await config.onSettingsChange?.(patch);
+            if (closed || generation !== profileGeneration) return { success: false, code: 'CANCELLED' };
             if (!response?.success || !response.data) throw new Error('Save failed');
             updateSettings(response.data, response.revision);
             if (Array.isArray(response.blockedRegions)) updateList('regions', response.blockedRegions, response.regionsRevision);
             setStatus('Changes saved');
         } catch {
+            if (closed || generation !== profileGeneration) return { success: false, code: 'CANCELLED' };
             response = { success: false };
             setStatus('Couldn’t save this change. Please try again.', true);
         } finally {
-            pending.delete(key);
-            render();
+            if (generation === profileGeneration) { pending.delete(key); render(); }
         }
         return response;
     }
 
     async function mutate(kind, action, value, onSuccess) {
+        const generation = profileGeneration;
         const source = SOURCES.find(item => item.key === kind);
         const key = `${kind}:${value}`;
         if (closed || pending.has(key) || pending.has(`${kind}:undefined`)) return;
@@ -266,13 +317,15 @@ function createBlockingSurface(config, container = null) {
         render();
         try {
             const response = await config[source.callback]?.(action, value);
-            if (closed) return;
+            if (closed || generation !== profileGeneration) return;
             if (!response?.success || !Array.isArray(response.data)) throw new Error('Save failed');
             updateList(kind, response.data, response.revision);
             onSuccess?.();
             setStatus('Changes saved');
-        } catch { setStatus('Couldn’t save this change. Your previous filters are unchanged. Please try again.', true); }
-        finally { pending.delete(key); render(); }
+        } catch {
+            if (generation === profileGeneration) setStatus('Couldn’t save this change. Your previous filters are unchanged. Please try again.', true);
+        }
+        finally { if (generation === profileGeneration) { pending.delete(key); render(); } }
     }
 
     function navigate(tab, editor = null) {
@@ -700,7 +753,7 @@ function createBlockingSurface(config, container = null) {
         const input = createElement('input', { id: inputId, type: 'text', className: 'xp-g-input', autocomplete: 'off',
             ...(kind === 'links' ? { maxlength: String(DOMAIN_LIMITS.MAX_INPUT_LENGTH) }
                 : accountHandle ? { maxlength: '16' } : {}),
-            placeholder: kind === 'links' ? 'youtube.com/LiveOverflow' : accountHandle ? '@username' : accountId ? 'https://x.com/i/user/123456789' : kind === 'affiliations' ? 'Organization name or handle' : 'Enter text or emoji' });
+            placeholder: kind === 'links' ? 'youtube.com/xxx' : accountHandle ? '@username' : accountId ? 'https://x.com/i/user/123456789' : kind === 'affiliations' ? 'Organization name or handle' : 'Enter text or emoji' });
         input.value = drafts[kind] || '';
         input.addEventListener('input', event => { drafts[kind] = input.value; if (!event.isComposing) render(); });
         input.addEventListener('compositionend', () => { drafts[kind] = input.value; render(); });
@@ -1061,5 +1114,5 @@ function createBlockingSurface(config, container = null) {
     }
     render(false);
     if (!embedded) title.focus({ preventScroll: true });
-    return { overlay, close, updateList, updateSettings, navigate };
+    return { overlay, close, updateList, updateSettings, updateProfile, navigate };
 }

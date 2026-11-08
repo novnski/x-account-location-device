@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-10-03
+Last updated: 2026-11-08
 
 This policy describes the current browser-extension source of X-Posed: Account Location & Device Info. Versions available in browser stores may not include every feature described below. The separate iPhone and iPad app has its own [privacy policy](PRIVACY_iOS.md).
 
@@ -23,6 +23,10 @@ To make authenticated requests, the extension captures authorization and CSRF he
 ## Local settings, account cache and profile details
 
 Settings, saved filters, Always Show accounts and the account cache are stored in the browser's extension-local storage, not browser sync storage. Saved filters can contain text, handles, domains or URLs you enter.
+
+Named filter profiles and each signed-in X account's selected profile are also stored locally. Selections use X's permanent account ID. Profiles and these selections are included in configuration backups and are not sent to Community Cache.
+
+Chat badges use public account IDs and handles from X's normal chat-user responses and identifiable on-page headers or inbox labels. Chat identity mappings stay in page-session memory. Message text, call details and encrypted message payloads are not stored, exported or sent to Community Cache by this feature.
 
 The account cache is keyed by handle. New cache writes retain a compact record of location, connection source, location accuracy, affiliation and freshness information. Older stored records can contain additional metadata. The cache has a configured limit of 50,000 accounts and treats observations older than 60 days as expired; entries can be evicted sooner because of capacity or browser-storage limits. Expired entries are removed during cache loading, access or saving, rather than by a server-side deletion schedule.
 

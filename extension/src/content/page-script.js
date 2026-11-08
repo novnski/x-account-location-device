@@ -12,6 +12,9 @@ import { PROFILE_LIMITS, isProfileUsername, projectProfileUser, mergeProjectedPr
 import { parseAccountResponse } from '../shared/account-response.js';
 import { FOLLOWING_LIMITS, isFollowingHandle, projectFollowingUser, readFollowingViewer } from '../shared/following-data.js';
 import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relations.js';
+import { CHAT_LIMITS, isChatUsersUrl, projectChatIdentities } from '../shared/chat-data.js';
+import { API_CONFIG } from '../shared/constants.js';
+import { generateFallbackHeaders } from '../shared/x-api-headers.js';
 
 (function() {
     'use strict';
@@ -40,9 +43,15 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
     const EVENT_FOLLOWING_HARVESTED = 'x-posed-following';
     const EVENT_SET_POST_RELATIONS = 'x-posed-set-post-relations';
     const EVENT_POST_RELATIONS_HARVESTED = 'x-posed-post-relations';
+    const EVENT_SET_CHAT = 'x-posed-set-chat';
+    const EVENT_CHAT_USERS = 'x-posed-chat-users';
+    const EVENT_SHADOW_ROOT_READY = 'x-posed-shadow-root-ready';
     const API_PATTERN = /x\.com\/i\/api\/graphql/;
     const ABOUT_QUERY_ID = 'XRqGa7EeokUU5kppkh13EA';
-    const lookupQueue = new PacedLookupQueue();
+    const lookupQueue = new PacedLookupQueue({
+        minIntervalMs: API_CONFIG.MIN_INTERVAL_MS,
+        maxConcurrent: API_CONFIG.MAX_CONCURRENT
+    });
     const pendingLookups = new Map();
 
     // Never collect profile text before the content script has loaded the user's
@@ -61,6 +70,78 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
     // to reuse the same recipient generation.
     let postRelationContext = null;
     let postRelationEpoch = 0;
+    // Chat identities are public ID/handle pairs, independent of profile-text
+    // enrichment. Never observe message endpoints or make another user request.
+    let chatEnabled = false;
+    let chatGeneration = 0;
+    let chatViewer = null;
+    let shadowNotificationPending = false;
+
+    // A shadow attached to an existing host produces no document mutation.
+    // Signal open roots without exposing a root, touching its tree or changing
+    // the native method's arguments, return value or exceptions.
+    if (typeof Element !== 'undefined' && typeof Element.prototype.attachShadow === 'function') {
+        const originalAttachShadow = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function () {
+            const root = originalAttachShadow.apply(this, arguments);
+            try {
+                if (chatEnabled && root?.mode === 'open' && !shadowNotificationPending) {
+                    shadowNotificationPending = true;
+                    Promise.resolve().then(() => {
+                        shadowNotificationPending = false;
+                        if (chatEnabled) window.dispatchEvent(new CustomEvent(EVENT_SHADOW_ROOT_READY));
+                    }).catch(() => { shadowNotificationPending = false; });
+                }
+            } catch { /* A diagnostic signal must never alter attachShadow. */ }
+            return root;
+        };
+    }
+
+    window.addEventListener(EVENT_SET_CHAT, event => {
+        let enabled = false;
+        try { enabled = JSON.parse(event.detail || '{}').enabled === true; } catch { /* Default off. */ }
+        const viewer = enabled ? readFollowingViewer() : null;
+        if (enabled !== chatEnabled || viewer !== chatViewer) chatGeneration++;
+        chatEnabled = enabled;
+        chatViewer = viewer;
+    });
+
+    function snapshotChatRequest(url, method) {
+        if (!chatEnabled || String(method).toUpperCase() !== 'GET' || !isChatUsersUrl(url)) return null;
+        const viewer = readFollowingViewer();
+        if (viewer !== chatViewer) {
+            chatViewer = viewer;
+            chatGeneration++;
+        }
+        return viewer ? { viewer, generation: chatGeneration, path: new URL(url).pathname } : null;
+    }
+
+    function chatResponseMatches(snapshot, url, status) {
+        if (!chatEnabled || !snapshot || snapshot.generation !== chatGeneration ||
+            status < 200 || status >= 300 || !isChatUsersUrl(url)) return false;
+        const viewer = readFollowingViewer();
+        if (viewer !== chatViewer) {
+            chatViewer = viewer;
+            chatGeneration++;
+            return false;
+        }
+        return snapshot.viewer === viewer && new URL(url).pathname === snapshot.path;
+    }
+
+    function relayChatIdentities(data, snapshot) {
+        if (!chatEnabled || !snapshot || snapshot.generation !== chatGeneration ||
+            snapshot.viewer !== readFollowingViewer()) return;
+        const users = projectChatIdentities(data);
+        for (let index = 0; index < users.length; index += CHAT_LIMITS.MAX_BATCH_ENTRIES) {
+            if (!chatEnabled || snapshot.generation !== chatGeneration ||
+                snapshot.viewer !== readFollowingViewer()) return;
+            const detail = JSON.stringify({ viewer: snapshot.viewer,
+                users: users.slice(index, index + CHAT_LIMITS.MAX_BATCH_ENTRIES) });
+            if (detail.length <= CHAT_LIMITS.MAX_RELAY_LENGTH) {
+                window.dispatchEvent(new CustomEvent(EVENT_CHAT_USERS, { detail }));
+            }
+        }
+    }
 
     window.addEventListener(EVENT_SET_POST_RELATIONS, event => {
         const previous = postRelationContext;
@@ -233,6 +314,15 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
 
     let headersCaptured = false;
     let capturedHeaders = null;
+    let lookupGeneration = 0;
+
+    function pageLookupHeaders() {
+        if (capturedHeaders) return capturedHeaders;
+        // Chat can restore its inbox before issuing a native API request. Use
+        // the existing public API fallback with this document's own CSRF cookie.
+        const token = document.cookie.split(';').map(cookie => cookie.trim()).find(cookie => cookie.startsWith('ct0='))?.slice(4);
+        return generateFallbackHeaders(token);
+    }
 
     function hasHeader(headers, name) {
         if (headers instanceof Headers) return headers.has(name);
@@ -267,6 +357,7 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
     }
 
     window.addEventListener(EVENT_RESET_HEADERS, () => {
+        lookupGeneration++;
         headersCaptured = false;
         capturedHeaders = null;
         debugLog('🔄 X-Posed: Headers reset - waiting for next API request');
@@ -283,20 +374,33 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
         const { id, screenName } = request;
 
         try {
-            if (!id || !screenName || !capturedHeaders) {
+            if (!id || !screenName || !pageLookupHeaders()) {
                 throw Object.assign(new Error('No captured page headers available'), { code: 'NO_HEADERS' });
             }
 
-            const key = screenName.toLowerCase();
+            if (typeof screenName !== 'string' || !/^[a-zA-Z0-9_]{1,15}(?![\s\S])/.test(screenName)) {
+                throw Object.assign(new Error('Invalid account handle'), { code: 'NOT_FOUND' });
+            }
+            const viewer = readFollowingViewer();
+            const generation = lookupGeneration;
+            if (request.viewer && request.viewer !== viewer) {
+                throw Object.assign(new Error('Account changed before lookup'), { code: 'CANCELLED' });
+            }
+            const fullMetadata = request.fullMetadata === true;
+            const key = `${viewer || ''}:${generation}:${screenName.toLowerCase()}:${fullMetadata ? 'full' : 'basic'}`;
             if (!pendingLookups.has(key)) {
                 const pending = lookupQueue.add(async signal => {
-                    if (!capturedHeaders) {
+                    if (lookupGeneration !== generation || readFollowingViewer() !== viewer) {
+                        throw Object.assign(new Error('Account changed before lookup'), { code: 'CANCELLED' });
+                    }
+                    const headers = pageLookupHeaders();
+                    if (!headers) {
                         throw Object.assign(new Error('No captured page headers available'), { code: 'NO_HEADERS' });
                     }
                     const variables = encodeURIComponent(JSON.stringify({ screenName }));
                     const url = `/i/api/graphql/${ABOUT_QUERY_ID}/AboutAccountQuery?variables=${variables}`;
                     const response = await fetch(url, {
-                        headers: { ...capturedHeaders, 'accept-language': 'en-US,en;q=0.9' },
+                        headers: { ...headers, 'accept-language': 'en-US,en;q=0.9' },
                         method: 'GET', credentials: 'include', signal
                     });
                     if (response.status === 429) {
@@ -313,7 +417,11 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
                             code: response.status === 404 ? 'NOT_FOUND' : 'NETWORK_ERROR'
                         });
                     }
-                    return parseAccountResponse(await response.json(), screenName, { fullMetadata: false });
+                    const body = await response.json();
+                    if (lookupGeneration !== generation || readFollowingViewer() !== viewer) {
+                        throw Object.assign(new Error('Account changed during lookup'), { code: 'CANCELLED' });
+                    }
+                    return parseAccountResponse(body, screenName, { fullMetadata });
                 }).finally(() => { pendingLookups.delete(key); });
                 pendingLookups.set(key, pending);
             }
@@ -493,6 +601,7 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
         const url = response.url || '';
         const snapshot = followingResponseMatches(context?.following, url, response.status) ? context.following : null;
         const postSnapshot = postRelationsResponseMatches(context?.postRelations, url, response.status) ? context.postRelations : null;
+        if (chatResponseMatches(context?.chat, url, response.status)) relayChatIdentities(data, context.chat);
         // Never route a rejected friendship response through the profile walker.
         if (snapshot || postSnapshot || (enrichmentEnabled && API_PATTERN.test(url))) tapPayload(url, data, via, snapshot, postSnapshot);
     }
@@ -505,7 +614,8 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
             const context = responseContexts.get(this);
             if ((enrichmentEnabled && API_PATTERN.test(url)) ||
                 followingResponseMatches(context?.following, url, this.status) ||
-                postRelationsResponseMatches(context?.postRelations, url, this.status)) {
+                postRelationsResponseMatches(context?.postRelations, url, this.status) ||
+                chatResponseMatches(context?.chat, url, this.status)) {
                 promise
                     .then(data => tapResponsePayload(this, data, 'json', context))
                     // X owns the real error handling for this response; we must not turn our
@@ -526,15 +636,22 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
         let isGraphql = false;
         let followingSnapshot = null;
         let postRelationsSnapshot = null;
+        let chatSnapshot = null;
         try {
             const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
             isGraphql = Boolean(url) && API_PATTERN.test(url);
             followingSnapshot = snapshotFollowingRequest(url, init?.method || input?.method || 'GET');
             postRelationsSnapshot = snapshotPostRelationsRequest(url, init?.method || input?.method || 'GET');
+            chatSnapshot = snapshotChatRequest(url, init?.method || input?.method || 'GET');
 
             if (isGraphql) {
                 harvestStats.graphqlFetches++;
                 if (init?.headers) sendHeaders(init.headers);
+            } else if (chatSnapshot) {
+                // A direct Chat visit may not have made a legacy GraphQL call.
+                // Reuse only this observed public-user request's normal credentials.
+                const headers = init?.headers ?? input?.headers;
+                if (headers) sendHeaders(headers);
             }
         } catch (e) {
             // Log errors in debug mode for troubleshooting
@@ -551,21 +668,23 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
         // Gated on the REQUEST url so the common case (every non-GraphQL fetch X makes, of
         // which there are many) doesn't pay for an extra promise link it can never use.
         try {
-            if ((!enrichmentEnabled || !isGraphql) && !followingSnapshot && !postRelationsSnapshot) return result;
+            if ((!enrichmentEnabled || !isGraphql) && !followingSnapshot && !postRelationsSnapshot && !chatSnapshot) return result;
 
             return result.then(response => {
                 try {
-                    const context = { following: followingSnapshot, postRelations: postRelationsSnapshot, tapped: false };
+                    const context = { following: followingSnapshot, postRelations: postRelationsSnapshot, chat: chatSnapshot, tapped: false };
                     responseContexts.set(response, context);
                     if ((!enrichmentEnabled || !isGraphql) &&
                         !followingResponseMatches(followingSnapshot, response.url, response.status) &&
-                        !postRelationsResponseMatches(postRelationsSnapshot, response.url, response.status)) return response;
+                        !postRelationsResponseMatches(postRelationsSnapshot, response.url, response.status) &&
+                        !chatResponseMatches(chatSnapshot, response.url, response.status)) return response;
                     const clone = response.clone();
                     // One tick, so the .json() tap gets first refusal on this response.
                     Promise.resolve().then(() => {
                         if (context.tapped || ((!enrichmentEnabled || !isGraphql) &&
                             !followingResponseMatches(followingSnapshot, response.url, response.status) &&
-                            !postRelationsResponseMatches(postRelationsSnapshot, response.url, response.status))) return;
+                            !postRelationsResponseMatches(postRelationsSnapshot, response.url, response.status) &&
+                            !chatResponseMatches(chatSnapshot, response.url, response.status))) return;
                         // Use the original reader so the fallback cannot tap itself.
                         originalResponseJson.call(clone).then(data => {
                             tapResponsePayload(response, data, 'fetch', context);
@@ -619,22 +738,26 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
             const isGraphql = requestUrl && API_PATTERN.test(requestUrl);
             const followingSnapshot = snapshotFollowingRequest(requestUrl, this._xPosedMethod);
             const postRelationsSnapshot = snapshotPostRelationsRequest(requestUrl, this._xPosedMethod);
+            const chatSnapshot = snapshotChatRequest(requestUrl, this._xPosedMethod || 'GET');
             if (isGraphql) {
                 harvestStats.graphqlXhrs++;
                 if (this._xPosedHeaders) sendHeaders(this._xPosedHeaders);
+            } else if (chatSnapshot && this._xPosedHeaders) {
+                sendHeaders(this._xPosedHeaders);
             }
 
             // One listener per request, also removed on errors/aborts. Reused XHRs
             // cannot inherit an old viewer context or replay a previous response.
-            if ((enrichmentEnabled && isGraphql) || followingSnapshot || postRelationsSnapshot) {
-                const request = { following: followingSnapshot, postRelations: postRelationsSnapshot };
+            if ((enrichmentEnabled && isGraphql) || followingSnapshot || postRelationsSnapshot || chatSnapshot) {
+                const request = { following: followingSnapshot, postRelations: postRelationsSnapshot, chat: chatSnapshot };
                 xhrRequests.set(this, request);
                 this.addEventListener('loadend', function () {
                     try {
                         if (xhrRequests.get(this) !== request) return;
                         const snapshot = followingResponseMatches(followingSnapshot, this.responseURL, this.status) ? followingSnapshot : null;
                         const postSnapshot = postRelationsResponseMatches(postRelationsSnapshot, this.responseURL, this.status) ? postRelationsSnapshot : null;
-                        if ((!enrichmentEnabled || !isGraphql) && !snapshot && !postSnapshot) return;
+                        const chat = chatResponseMatches(chatSnapshot, this.responseURL, this.status) ? chatSnapshot : null;
+                        if ((!enrichmentEnabled || !isGraphql) && !snapshot && !postSnapshot && !chat) return;
                         const type = this.responseType;
                         // JSON is already parsed; ignore blobs and cap relationship-only
                         // text parsing so a large response cannot pin the main thread.
@@ -642,15 +765,17 @@ import { POST_RELATION_LIMITS, collectPostRelations } from '../shared/post-relat
                         let data = null;
                         if (type === 'json') data = this.response;
                         else if (!type || type === 'text') {
-                            if (!enrichmentEnabled && this.responseText.length > 8 * 1024 * 1024) return;
+                            if ((!enrichmentEnabled || chat) && this.responseText.length > 8 * 1024 * 1024) return;
                             data = JSON.parse(this.responseText);
                         } else return;
                         if (!data) return;
 
-                        tapPayload(requestUrl, data, 'xhr', snapshot, postSnapshot);
-
-                        harvestStats.xhrResponseType = type || '(default)';
-                        harvestStats.lastHarvestMs = Math.round(performance.now() - started);
+                        if (chat) relayChatIdentities(data, chat);
+                        if ((enrichmentEnabled && isGraphql) || snapshot || postSnapshot) {
+                            tapPayload(requestUrl, data, 'xhr', snapshot, postSnapshot);
+                            harvestStats.xhrResponseType = type || '(default)';
+                            harvestStats.lastHarvestMs = Math.round(performance.now() - started);
+                        }
                     } catch (e) {
                         logError('xhr harvest', e);
                     }

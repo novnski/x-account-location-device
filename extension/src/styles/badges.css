@@ -44,6 +44,24 @@
     --xp-badge-details-padding: 5px;
 }
 
+/* Chat rows are links owned by X. Keep our button outside those links, while
+   reserving its measured width beside the name without changing virtual row heights. */
+.x-chat-badge-owner { position: relative; }
+.x-chat-name-line {
+    box-sizing: border-box;
+    padding-inline-end: var(--x-chat-badge-space, 0px);
+}
+.x-chat-name-line > div:first-child { min-inline-size: 0; flex-shrink: 1; }
+.x-chat-badge-mount {
+    position: absolute;
+    z-index: 1;
+    display: inline-flex;
+    inline-size: max-content;
+    align-items: center;
+    transform: translateY(-50%);
+}
+.x-chat-badge-mount > .x-info-badge { margin: 0; }
+
 /* Keep native profile links and follow controls intact. These layout rules disappear
    when our direct-child badge/loading marker is removed from a validated handle row. */
 [data-testid="UserCell"] .x-user-cell-handle-row:has(> .x-info-badge, > .x-flag-shimmer) {

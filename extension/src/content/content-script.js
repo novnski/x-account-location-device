@@ -5,7 +5,7 @@
  */
 
 import browserAPI from '../shared/browser-api.js';
-import { MESSAGE_TYPES, CSS_CLASSES, SELECTORS, VERSION, affiliationWasChecked } from '../shared/constants.js';
+import { MESSAGE_TYPES, CSS_CLASSES, SELECTORS, VERSION, affiliationWasChecked, normalizeAccountId } from '../shared/constants.js';
 
 // Import modules
 import {
@@ -14,6 +14,7 @@ import {
     injectSidebarLink,
     removeSidebarLink,
     syncSidebarSettings,
+    createBadge,
     updateBadgeInfo,
     cleanupUI,
     showToast
@@ -44,7 +45,7 @@ import { POST_RELATION_LIMITS } from '../shared/post-relations.js';
 import {
     configurePostRelations, getPostRelationsContext, mergePostRelationsBatch, clearPostRelations
 } from './post-relations-cache.js';
-import { syncModalState, syncModalSettings, closeModal } from './modal.js';
+import { syncModalState, syncModalSettings, syncModalProfile, closeModal } from './modal.js';
 import { cleanupEvidenceCapture } from './evidence-capture.js';
 import { FILTER_SOURCES } from '../shared/filter-registry.js';
 import { createLifecycle } from '../shared/lifecycle.js';
@@ -52,6 +53,10 @@ import { createSnapshotTracker } from '../shared/state-sync.js';
 import { createFilterStatisticsReporter } from './filter-statistics.js';
 import { ACCOUNT_COUNT_FILTERS, isAccountCountThreshold, matchesAccountCount } from '../shared/account-counts.js';
 import { areRegionCountrySelectionsEqual } from '../shared/region-membership.js';
+import { createChatBadges } from './chat-badges.js';
+import { captureDisplayName } from './display-name.js';
+import { createProfileClient } from '../shared/profile-client.js';
+import { PROFILE_MESSAGES, DEFAULT_PROFILE_ID } from '../shared/profiles.js';
 
 // ============================================
 // STATE
@@ -75,6 +80,10 @@ let debugMode = false;
 let session = null;
 let isCleanedUp = false;
 let filterStatisticsReporter = null;
+let chatBadges = null;
+let profileClient = null;
+let appliedProfileContext = null;
+let nextProfileRetry = 0;
 let syncFollowingMonitor = () => {};
 const cancelledResponse = () => ({ success: false, code: 'CANCELLED', error: 'Page session ended' });
 
@@ -97,10 +106,12 @@ function debug(...args) {
     }
 }
 
-function fetchUserInfoViaPage(screenName) {
+function fetchUserInfoViaPage(screenName, { fullMetadata = false } = {}) {
     const current = session;
     if (!current || current.disposed) return Promise.resolve(cancelledResponse());
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const profileGeneration = profileClient?.state.generation;
+    const viewer = readFollowingViewer();
     return new Promise(resolve => {
         let settled = false;
         let cancelTimer = () => {};
@@ -117,14 +128,17 @@ function fetchUserInfoViaPage(screenName) {
         removeListener = current.listen(window, 'x-posed-fetch-user-info-result', event => {
             let result;
             try { result = JSON.parse(event.detail || '{}'); } catch { return; }
-            if (result.id === id) finish(result);
+            if (result.id === id) {
+                const changed = (profileClient && profileClient.state.generation !== profileGeneration) || readFollowingViewer() !== viewer;
+                finish(changed ? cancelledResponse() : result);
+            }
         });
         cancelTimer = current.delay(() => finish({
             success: false, code: 'TIMEOUT', error: 'Timed out waiting for page fetch'
         }), 10000);
         forget = current.add(() => finish(cancelledResponse()));
         window.dispatchEvent(new CustomEvent('x-posed-fetch-user-info', {
-            detail: JSON.stringify({ id, screenName })
+            detail: JSON.stringify({ id, screenName, fullMetadata, viewer })
         }));
     });
 }
@@ -140,10 +154,10 @@ async function sendMessage(message) {
     const current = session;
     if (!current || current.disposed) return cancelledResponse();
     try {
-        const response = await browserAPI.runtime.sendMessage(message);
+        const response = profileClient ? await profileClient.send(message) : await browserAPI.runtime.sendMessage(message);
         if (current.disposed) return cancelledResponse();
         const updateType = STATE_MUTATION_UPDATES[message.type];
-        if (response?.success && updateType) {
+        if (!profileClient && response?.success && updateType) {
             await handleBackgroundMessage(updateType, response.data, response.revision);
             if (message.type === MESSAGE_TYPES.SET_SETTINGS && Array.isArray(response.blockedRegions)) {
                 await handleBackgroundMessage(MESSAGE_TYPES.BLOCKED_REGIONS_UPDATED, response.blockedRegions, response.regionsRevision);
@@ -160,7 +174,8 @@ async function sendMessage(message) {
  * Get CSRF token from cookies
  */
 function getCsrfToken() {
-    const cookies = document.cookie.split('; ');
+    let cookies;
+    try { cookies = document.cookie.split('; '); } catch { return null; }
     for (const cookie of cookies) {
         const [key, value] = cookie.split('=');
         if (key === 'ct0') {
@@ -218,7 +233,10 @@ function setupPageScriptListener(current) {
         });
 
         if (response?.success && memoizedScanPageFn) {
-            current.delay(() => memoizedScanPageFn?.(), 250);
+            current.delay(() => {
+                memoizedScanPageFn?.();
+                chatBadges?.retry();
+            }, 250);
         }
     });
 }
@@ -259,6 +277,97 @@ function currentFilters() {
     return { ...filterSets, settings };
 }
 
+/** Persist selections only against X's permanent account ID, never its handle. */
+function currentAccountId() {
+    const viewer = readFollowingViewer();
+    return viewer?.startsWith('id:') ? normalizeAccountId(viewer.slice(3)) || null : null;
+}
+
+function syncAccountProfile() {
+    if (!profileClient || isCleanedUp) return;
+    const accountId = currentAccountId();
+    const state = profileClient.state;
+    if (state.accountId === accountId && (state.ready || state.pending || Date.now() < nextProfileRetry)) return;
+    nextProfileRetry = Date.now() + 2000;
+    void profileClient.bindAccount(accountId).catch(error => debug('Profile reload deferred:', error.message));
+}
+
+/** Clear old verdicts synchronously before awaiting a different profile/account. */
+function beginProfileContextChange(state) {
+    const accountChanged = appliedProfileContext?.accountId !== state.accountId;
+    settings = { ...settings, enabled: false, showVpnUsers: true, hideRelatedPosts: false };
+    settingsLoaded = false;
+    isEnabled = false;
+    stateSnapshots.reset();
+    for (const source of FILTER_SOURCES) filterSets[source.field] = new Set();
+    hovercard.resetProfileContext();
+    resetProcessedElements(currentFilters());
+    if (accountChanged) {
+        clearFollowing();
+        clearPostRelations();
+        // A former viewer's inaccessible/protected-account miss is not proof
+        // that the next viewer cannot read it. Keep successful public records.
+        for (const [name, info] of userInfoCache.entries()) if (info === null) userInfoCache.delete(name);
+        csrfToken = getCsrfToken();
+        // Page credentials and passive relationship observations belong to the
+        // current viewer; public account observations remain warm.
+        window.dispatchEvent(new CustomEvent('x-posed-reset-headers'));
+    }
+    syncEnrichmentSetting();
+    syncFollowingSetting(true);
+    syncPostRelationsSetting(true);
+    chatBadges?.refresh();
+}
+
+/** Apply a complete profile transaction before notifying any DOM consumers. */
+function applyProfileSnapshot(snapshot, state) {
+    if (isCleanedUp) return;
+    const previous = settings;
+    const previousAffiliations = filterSets.blockedAffiliations;
+    const changedContext = !appliedProfileContext || appliedProfileContext.accountId !== state.accountId ||
+        appliedProfileContext.profileId !== state.profileId;
+    settings = { ...snapshot.settings };
+    for (const source of FILTER_SOURCES) filterSets[source.field] = new Set(snapshot.filters[source.field]);
+    settingsLoaded = true;
+    isEnabled = settings.enabled !== false;
+    debugMode = settings.debugMode === true;
+    appliedProfileContext = { accountId: state.accountId, profileId: state.profileId };
+    if (changedContext) stateSnapshots.reset();
+    stateSnapshots.accept(MESSAGE_TYPES.SETTINGS_UPDATED, snapshot.revision);
+    for (const source of FILTER_SOURCES) stateSnapshots.accept(source.update, snapshot.revision);
+
+    syncSidebarSettings(settings, snapshot.revision);
+    syncModalProfile(snapshot, state);
+    syncFollowingSetting(changedContext);
+    syncPostRelationsSetting(changedContext);
+    syncEnrichmentSetting();
+    hovercard.syncFilters();
+
+    const appearanceKeys = ['enabled', 'showFlags', 'flagFromDevice', 'showDevices', 'showVpnIndicator',
+        'showCaptureButton', 'showVpnUsers', 'highlightBlockedTweets', 'showInfoIcon', 'hovercardTrigger',
+        'badgeSize', 'showBadgeBackground'];
+    const addedAffiliation = [...filterSets.blockedAffiliations].some(value => !previousAffiliations.has(value));
+    if (addedAffiliation) {
+        reprocessRowsMissingAffiliation();
+    } else if (changedContext || !isEnabled || appearanceKeys.some(key => previous[key] !== settings[key])) {
+        resetProcessedElements(currentFilters());
+        memoizedScanPageFn?.();
+    } else {
+        // Ordinary rule changes keep the open card and its pending actions in
+        // place while the observer re-derives every verdict from warm data.
+        updateBlockedTweets(currentFilters());
+    }
+    if (!isEnabled || settings.profileEnrichment === false) clearProfiles();
+    if (previous.showSidebarBlockerLink !== settings.showSidebarBlockerLink) {
+        if (settings.showSidebarBlockerLink === false) removeSidebarLink(debug);
+        else if (document.body) {
+            injectSidebarLink(settings, debug, filterSets.blockedCountries,
+                filterSets.blockedRegions, sendMessage, MESSAGE_TYPES, getBlockingState);
+        }
+    }
+    chatBadges?.refresh();
+}
+
 /**
  * Tell the page script whether to read profile data out of X's own responses.
  * Sent on page-script ready and whenever the setting changes, so the kill switch takes
@@ -289,8 +398,8 @@ function syncFollowingSetting(force = false) {
 
 /** One existing identity monitor serves both independent passive-data preferences. */
 function shouldMonitorViewer() {
-    return settingsLoaded && isEnabled && !isCleanedUp &&
-        (settings.alwaysShowFollowing === true || settings.hideRelatedPosts === true);
+    return !isCleanedUp && (profileClient !== null || (settingsLoaded && isEnabled &&
+        (settings.alwaysShowFollowing === true || settings.hideRelatedPosts === true)));
 }
 
 /** Public post links stay session-only and cannot inherit a former viewer's context. */
@@ -355,6 +464,7 @@ function setupFollowingListener(current) {
     // also happen in another tab, without changing this tab's sidebar at all.
     const checkViewer = () => {
         if (!current.disposed && shouldMonitorViewer()) {
+            syncAccountProfile();
             syncFollowingSetting();
             syncPostRelationsSetting();
         }
@@ -366,8 +476,8 @@ function setupFollowingListener(current) {
     let cancelPoll = () => {};
     const pollViewer = () => {
         if (!monitoring || current.disposed) return;
-        checkViewer();
-        if (monitoring) cancelPoll = current.delay(pollViewer, 1000);
+        if (!document.hidden) checkViewer();
+        if (monitoring) cancelPoll = current.delay(pollViewer, document.hidden ? 10000 : 1000);
     };
     syncFollowingMonitor = enabled => {
         if (monitoring === enabled) return;
@@ -394,6 +504,8 @@ function getBlockingState() {
     return {
         ...Object.fromEntries(FILTER_SOURCES.map(source => [source.field, [...filterSets[source.field]]])),
         settings: { ...settings },
+        profileClient,
+        profileContext: profileClient ? { accountId: profileClient.state.accountId, profileId: profileClient.state.profileId } : null,
         stateRevisions: stateSnapshots.snapshot()
     };
 }
@@ -432,6 +544,7 @@ function setupProfileListener(current) {
             if (!profile) continue;
             const previous = activeCounts.length ? getProfile(entry.u) : null;
             const textChanged = setProfile(entry.u, profile);
+            chatBadges?.remember([entry]);
             const next = activeCounts.length ? getProfile(entry.u) : null;
             const countChanged = activeCounts.some(rule => {
                 const previousCount = previous?.[rule.profileField];
@@ -464,6 +577,18 @@ function setupProfileListener(current) {
  */
 function setupBackgroundListener(current) {
     const messageHandler = (message, sender, sendResponse) => {
+        if (message.type === PROFILE_MESSAGES.GET_PROFILE_CONTEXT) {
+            const respond = () => sendResponse({ success: profileClient !== null,
+                accountId: currentAccountId(), profileId: profileClient?.state.ready
+                    ? profileClient.state.profileId : DEFAULT_PROFILE_ID });
+            if (profileClient && profileClient.state.accountId !== currentAccountId()) {
+                profileClient.bindAccount(currentAccountId()).then(respond, respond);
+                return true;
+            }
+            respond();
+            return false;
+        }
+        if (profileClient?.accept(message)) { sendResponse({ success: true }); return false; }
         const { type, payload, revision } = message;
 
         // Use proper async handling with error boundary
@@ -548,6 +673,7 @@ function setupAuthoritativeInfoListener(current) {
                 updateBlockedTweets(currentFilters(), new Set([key]));
             }
             hovercard.syncFilters();
+            chatBadges?.refresh();
         });
     };
 
@@ -646,6 +772,7 @@ async function handleBackgroundMessage(type, payload, revision) {
                     injectSidebarLink(settings, debug, filterSets.blockedCountries, filterSets.blockedRegions, sendMessage, MESSAGE_TYPES, getBlockingState);
                 }
             }
+            chatBadges?.refresh();
             return { success: true };
         }
 
@@ -690,6 +817,8 @@ async function initialize() {
     if (session && !session.disposed) return;
     const current = session = createLifecycle();
     isCleanedUp = false;
+    appliedProfileContext = null;
+    nextProfileRetry = 0;
     settingsLoaded = false;
     isEnabled = false;
     console.log(`🚀 X-Posed v${VERSION} initializing...`);
@@ -704,6 +833,16 @@ async function initialize() {
     setFilterStatisticsReporter(filterStatisticsReporter);
     
     try {
+        const client = profileClient = createProfileClient({
+            transport: message => browserAPI.runtime.sendMessage(message),
+            getAccountId: currentAccountId,
+            onContextChange: beginProfileContextChange,
+            onSnapshot: applyProfileSnapshot
+        });
+        current.add(() => {
+            client.dispose();
+            if (profileClient === client) profileClient = null;
+        });
         // Set up listeners BEFORE injecting page script
         setupPageScriptListener(current);
         setupProfileListener(current);
@@ -721,25 +860,11 @@ async function initialize() {
         // Inject page script for header interception
         injectPageScript(current);
 
-        // Load every registered filter without maintaining a second positional list.
-        const [settingsResponse, ...responses] = await Promise.all([
-            sendMessage({ type: MESSAGE_TYPES.GET_SETTINGS }),
-            ...FILTER_SOURCES.map(source => sendMessage({ type: source.get }))
-        ]);
+        // One complete transaction avoids combining another account's lists
+        // with a newly-selected profile's behavior. Unknown viewers use Default.
+        const accountId = currentAccountId();
+        await client.initialize({ accountId, ...(accountId ? {} : { profileId: DEFAULT_PROFILE_ID }) });
         if (current.disposed) return;
-        if (settingsResponse?.success && stateSnapshots.accept(MESSAGE_TYPES.SETTINGS_UPDATED, settingsResponse.revision)) {
-            settings = settingsResponse.data;
-            settingsLoaded = true;
-            isEnabled = settings.enabled !== false;
-            debugMode = settings.debugMode === true;
-        }
-        FILTER_SOURCES.forEach((source, index) => {
-            const response = responses[index];
-            if (response?.success && Array.isArray(response.data) &&
-                stateSnapshots.accept(source.update, response.revision)) {
-                filterSets[source.field] = new Set(response.data);
-            }
-        });
         console.log(`✅ X-Posed initialized (enabled: ${isEnabled}, debug: ${debugMode})`);
         maybeShowPasteHint(current);
         // Ready can precede storage loading or follow it. Sending on both events
@@ -749,6 +874,66 @@ async function initialize() {
         syncPostRelationsSetting(true);
 
         createMemoizedFunctions(current);
+        let chatSheet = null;
+        chatBadges = createChatBadges({
+            getSettings: () => ({ ...settings, enabled: settingsLoaded && isEnabled }),
+            getKnownInfo: name => userInfoCache.get(name),
+            lookupInfo: async screenName => {
+                const generation = client.state.generation;
+                let response = await sendMessage({ type: MESSAGE_TYPES.FETCH_USER_INFO, payload: { screenName, csrfToken } });
+                if (current.disposed || !isEnabled || generation !== client.state.generation) return null;
+                if (['UNAUTHORIZED', 'NO_HEADERS', 'PAGE_CONTEXT_REQUIRED'].includes(response?.code)) {
+                    response = await fetchUserInfoViaPage(screenName, { fullMetadata: true });
+                    if (current.disposed || !isEnabled || generation !== client.state.generation) return null;
+                    if (response?.success) {
+                        response.data = { ...response.data, timestamp: Date.now(), fromCloud: false };
+                        await sendMessage({ type: MESSAGE_TYPES.SET_CACHE, payload: { screenName, data: response.data, fromPage: true } });
+                    }
+                }
+                if (current.disposed || !isEnabled || generation !== client.state.generation || !response?.success || !response.data) return null;
+                const latest = userInfoCache.get(screenName);
+                if (hasNewerObservation(latest, response.data)) return latest;
+                userInfoCache.set(screenName, response.data);
+                return response.data;
+            },
+            renderBadge: ({ owner, mount, name, screenName, displayName, info, settings: appearance }) => {
+                createBadge(owner, screenName, info, true, appearance, debug, csrfToken,
+                    effectiveCountry(info, appearance.flagFromDevice), displayName,
+                    captureDisplayName(name, displayName), { target: mount, ref: null });
+            },
+            updateBadge: updateBadgeInfo,
+            isNewer: hasNewerObservation,
+            prepareRoot: async root => {
+                // Manifest styles stop at a shadow boundary. Share one local
+                // stylesheet across the Chat roots in this document only.
+                chatSheet ||= fetch(browserAPI.runtime.getURL('styles/badges.css')).then(async response => {
+                    if (!response.ok) throw new Error('Chat stylesheet unavailable');
+                    const css = await response.text();
+                    if (typeof CSSStyleSheet === 'function' && 'replaceSync' in CSSStyleSheet.prototype) {
+                        const sheet = new CSSStyleSheet();
+                        sheet.replaceSync(css);
+                        return { sheet, css };
+                    }
+                    return { css };
+                });
+                const styles = await chatSheet;
+                if (current.disposed) return;
+                if (styles.sheet && 'adoptedStyleSheets' in root) {
+                    root.adoptedStyleSheets = [...root.adoptedStyleSheets, styles.sheet];
+                    return () => { root.adoptedStyleSheets = root.adoptedStyleSheets.filter(sheet => sheet !== styles.sheet); };
+                }
+                const style = document.createElement('style');
+                style.textContent = styles.css;
+                root.append(style);
+                return () => style.remove();
+            },
+            replaceAnchor: (previous, replacement) => hovercard.replaceAnchor(previous, replacement)
+        });
+        const currentChatBadges = chatBadges;
+        current.add(() => {
+            currentChatBadges.dispose();
+            if (chatBadges === currentChatBadges) chatBadges = null;
+        });
         // The manifest is the sole production owner of content stylesheets.
         // A restored page still has DOM markers from its previous session.
         resetProcessedElements(currentFilters());
@@ -763,6 +948,7 @@ async function initialize() {
 
             readyWorkStarted = true;
             startObserver(memoizedIsEnabledFn, memoizedProcessElementSafe, memoizedScanPageFn, debug, currentFilters);
+            currentChatBadges.start();
 
             try {
                 detectAndApplyTheme(debug);
@@ -801,13 +987,14 @@ async function initialize() {
 function createMemoizedFunctions(current) {
     hovercard.configureFilters({
         getState: () => current.disposed ? null : getBlockingState(),
-        sendMessage: message => current.disposed ? Promise.resolve(cancelledResponse()) : sendMessage(message)
+        sendMessage: message => current.disposed ? Promise.resolve(cancelledResponse()) : sendMessage(message),
+        fetchUserInfoViaPage: (name, options) => current.disposed ? Promise.resolve(cancelledResponse()) : fetchUserInfoViaPage(name, options)
     });
     const context = {
         get settings() { return settings; },
         get csrfToken() { return csrfToken; },
         sendMessage: message => current.disposed ? Promise.resolve(cancelledResponse()) : sendMessage(message),
-        fetchUserInfoViaPage: name => current.disposed ? Promise.resolve(cancelledResponse()) : fetchUserInfoViaPage(name),
+        fetchUserInfoViaPage: (name, options) => current.disposed ? Promise.resolve(cancelledResponse()) : fetchUserInfoViaPage(name, options),
         debug,
         get debugMode() { return debugMode; }
     };

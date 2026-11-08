@@ -3,7 +3,8 @@
  * Handles all API requests to X platform with rate limiting and retry logic
  */
 
-import { API_CONFIG, BEARER_TOKEN } from '../shared/constants.js';
+import { API_CONFIG } from '../shared/constants.js';
+import { generateFallbackHeaders } from '../shared/x-api-headers.js';
 import { sleep } from '../shared/utils.js';
 import browserAPI from '../shared/browser-api.js';
 import { RATE_LIMIT_STORAGE_KEY, readRateLimitReset, withLookupTimeout } from '../shared/request-policy.js';
@@ -252,15 +253,7 @@ export class XAPIClient {
      * Generate fallback headers using CSRF token from cookies (if available)
      */
     generateFallbackHeaders(csrfToken) {
-        if (!csrfToken) return null;
-
-        return {
-            'authorization': BEARER_TOKEN,
-            'x-csrf-token': csrfToken,
-            'x-twitter-active-user': 'yes',
-            'x-twitter-auth-type': 'OAuth2Session',
-            'content-type': 'application/json'
-        };
+        return generateFallbackHeaders(csrfToken);
     }
 
     /**

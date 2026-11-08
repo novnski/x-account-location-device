@@ -33,6 +33,7 @@ class Element {
         });
     }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
 }
 
@@ -46,6 +47,17 @@ function author(scope, handle, url = MAIN) {
 function post(handle = 'alice', url = MAIN) {
     const article = new Element('article', { 'data-testid': 'tweet' });
     return { article, ...author(article, handle, url) };
+}
+function chat(kind = 'header', handle = 'alice', url = MAIN) {
+    const owner = new Element('div', { 'data-x-chat-handle': handle });
+    const link = new Element('a', { href: kind === 'header' ? `https://x.com/${handle}` : `/i/chat/${kind === 'request' ? 'requests/' : ''}999-123` });
+    const container = kind === 'header' ? link : new Element('div', { 'data-inbox-row': '' });
+    const image = new Element('img', { src: url });
+    container.append(image);
+    if (container !== link) link.append(container);
+    const anchor = new Element('span');
+    owner.append(link, anchor);
+    return { owner, link, container, image, anchor };
 }
 const resolve = (fixture, info = {}, profile = null, screenName = 'alice') => resolveCardAvatar({ anchor: fixture?.anchor, screenName, info, profile });
 const cached = (restId = '123') => ({ meta: { restId, avatarUrl: CACHED, profileImageShape: 'Square' } });
@@ -135,6 +147,54 @@ check('Square shape comes from compatible metadata or explicit native image pres
     assert.equal(resolve(clipped).shape, 'square');
     const unknown = { meta: { avatarUrl: CACHED, profileImageShape: 'Hexagon' } };
     assert.equal(resolveCardAvatar({ screenName: 'alice', info: unknown }).shape, 'circle');
+});
+
+check('Chat headers, inbox rows and requests use their own live avatar on first paint', () => {
+    for (const kind of ['header', 'inbox', 'request']) {
+        const fixture = chat(kind, 'ALICE');
+        assert.deepEqual(resolve(fixture), { url: MAIN, shape: 'circle' }, kind);
+        fixture.image.currentSrc = QUOTED;
+        assert.deepEqual(resolve(fixture), { url: QUOTED, shape: 'circle' }, `${kind}: use the actual rendered source`);
+    }
+});
+
+check('Recycled chat owners and detached controls reject stale cached avatars', () => {
+    for (const kind of ['header', 'inbox', 'request']) {
+        const fixture = chat(kind);
+        fixture.owner.dataset.xChatHandle = 'bob';
+        assert.equal(resolve(fixture, cached()), null, `${kind}: a new owner cannot inherit the old account image`);
+        fixture.owner.dataset.xChatHandle = 'alice';
+        fixture.anchor.connected = false;
+        assert.equal(resolve(fixture, cached()), null, `${kind}: a detached control is stale`);
+    }
+});
+
+check('Chat avatar scopes never borrow neighboring rows or images outside the native identity link', () => {
+    for (const kind of ['header', 'inbox', 'request']) {
+        const rows = new Element();
+        const own = chat(kind), other = chat(kind, 'bob', QUOTED);
+        rows.append(own.owner, other.owner);
+        own.owner.append(new Element('img', { src: QUOTED }));
+        own.image.hidden = true;
+        assert.equal(resolve(own), null, `${kind}: the neighboring and out-of-scope images are not this account's avatar`);
+        assert.deepEqual(resolve(other, {}, null, 'bob'), { url: QUOTED, shape: 'circle' });
+        assert.deepEqual(resolve(own, cached()), { url: CACHED, shape: 'square' }, `${kind}: only its own compatible metadata may fill a missing image`);
+        own.image.hidden = false;
+        own.image.setAttribute('src', 'https://evil.test/avatar.jpg');
+        assert.equal(resolve(own), null, `${kind}: an untrusted image never permits borrowing another image`);
+    }
+});
+
+check('Current chat artwork survives an API identity conflict without inheriting its stale shape or fallback', () => {
+    for (const kind of ['header', 'inbox', 'request']) {
+        const fixture = chat(kind);
+        assert.deepEqual(resolve(fixture, cached('123'), { userId: '456' }), { url: MAIN, shape: 'circle' },
+            `${kind}: owned DOM remains current, while mismatched square metadata is ignored`);
+        assert.deepEqual(resolve(fixture, cached('123'), { userId: '123' }), { url: MAIN, shape: 'square' },
+            `${kind}: matching identity may supply the image shape`);
+        fixture.image.hidden = true;
+        assert.equal(resolve(fixture, cached('123'), { userId: '456' }), null, `${kind}: conflicting API fallback is rejected`);
+    }
 });
 
 console.log(`Avatar regression checks passed (${groups} groups).`);

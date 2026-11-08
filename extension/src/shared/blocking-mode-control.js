@@ -16,6 +16,7 @@ export function createBlockingModeControl({ id, settings = {}, revision, onChang
     const snapshots = createSnapshotTracker();
     snapshots.accept('settings', revision);
     let pending = false;
+    let generation = 0;
     const inputs = [];
 
     function render() {
@@ -33,6 +34,14 @@ export function createBlockingModeControl({ id, settings = {}, revision, onChang
         render();
     }
 
+    function reset(next, revision) {
+        generation++;
+        pending = false;
+        snapshots.reset();
+        status.textContent = '';
+        update(next, revision);
+    }
+
     for (const [value, text] of [['hide', 'Hide'], ['highlight', 'Highlight']]) {
         const label = document.createElement('label');
         const input = document.createElement('input');
@@ -47,25 +56,26 @@ export function createBlockingModeControl({ id, settings = {}, revision, onChang
         input.addEventListener('change', async () => {
             if (!input.checked || pending) return;
             const highlight = value === 'highlight';
+            const startedGeneration = generation;
             if (highlight === (committed.highlightBlockedTweets === true)) return;
             pending = true;
             element.disabled = true;
             status.textContent = 'Saving…';
             try {
                 const response = await onChange({ highlightBlockedTweets: highlight });
+                if (generation !== startedGeneration) return;
                 if (!response?.success) throw new Error('Save failed');
                 // A later broadcast wins over an older action acknowledgement.
                 if (snapshots.accept('settings', response.revision)) committed = { ...response.data };
                 status.textContent = '';
             } catch {
-                status.textContent = 'Couldn’t save the mode. Please try again.';
+                if (generation === startedGeneration) status.textContent = 'Couldn’t save the mode. Please try again.';
             } finally {
-                pending = false;
-                render();
+                if (generation === startedGeneration) { pending = false; render(); }
             }
         });
     }
     element.append(legend, choices, status);
     render();
-    return { element, update };
+    return { element, update, reset };
 }

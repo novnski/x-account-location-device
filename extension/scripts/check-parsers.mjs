@@ -58,15 +58,27 @@ function checkCaller(file, fullMetadata) {
     if (fullMetadata) {
         assert.equal(args.length, 2, `${file}: retain the default full metadata projection`);
     } else {
-        assert.equal(args.length, 3, `${file}: explicitly request the page metadata subset`);
+        assert.equal(args.length, 3, `${file}: explicitly select the page metadata projection`);
         assert.equal(args[2].type, 'ObjectExpression', `${file}: use explicit parser options`);
         assert.equal(args[2].properties.length, 1, `${file}: keep the page projection explicit`);
         const option = args[2].properties[0];
         assert.equal(option.type, 'Property', `${file}: do not spread parser options`);
         assert.equal(option.computed, false, `${file}: use a literal projection option`);
         assert.equal(option.key.name || option.key.value, 'fullMetadata');
-        assert.equal(option.value.type, 'Literal');
-        assert.equal(option.value.value, false, `${file}: retain the page metadata subset`);
+        assert.equal(option.value.type, 'Identifier');
+        const declarations = [];
+        walk(ast, node => {
+            if (node.type === 'VariableDeclarator' && node.id.name === option.value.name) declarations.push(node);
+        });
+        assert.equal(declarations.length, 1, `${file}: bind the projection once`);
+        const projection = declarations[0].init;
+        assert.equal(projection.type, 'BinaryExpression');
+        assert.equal(projection.operator, '===');
+        assert.equal(propertyName(projection.left), 'fullMetadata');
+        assert.equal(projection.left.object.name, 'request');
+        assert.equal(projection.right.type, 'Literal');
+        assert.equal(projection.right.value, true,
+            `${file}: retain the lean default and require an explicit full metadata request`);
     }
     console.log(`${file}: shared parser, ${fullMetadata ? 'full' : 'page'} metadata projection`);
 }

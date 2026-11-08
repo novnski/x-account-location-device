@@ -12,6 +12,9 @@ import { mountBlockingSettings } from '../content/graphite-dialog.js';
 import { createSnapshotTracker } from '../shared/state-sync.js';
 import { FILTER_SOURCES } from '../shared/filter-registry.js';
 import { BACKUP_FORMAT, prepareBackupImport } from '../shared/backup.js';
+import { createProfileClient, resolveActiveProfileContext } from '../shared/profile-client.js';
+import { createProfilePicker } from '../shared/profile-picker.js';
+import { PROFILE_MESSAGES } from '../shared/profiles.js';
 
 const TOGGLES = [
     ['opt-enabled', 'enabled', true],
@@ -73,6 +76,25 @@ let saveStatusTimeout = null;
 let rateLimitMonitorInterval = null;
 const listState = Object.fromEntries(LISTS.map(source => [source.field, []]));
 const snapshots = createSnapshotTracker();
+let profilePicker = null;
+let configurationRequest = 0;
+const profileClient = createProfileClient({
+    followEditorSelection: true,
+    transport: message => browserAPI.runtime.sendMessage(message),
+    onContextChange: () => {
+        snapshots.reset();
+        settingsLoaded = false;
+        profilePicker?.element.remove();
+        blockingEditor?.destroy();
+        blockingEditor = null;
+        const host = document.getElementById('blocking-editor');
+        host.textContent = 'Loading your filters...';
+        host.setAttribute('aria-busy', 'true');
+        for (const [id] of TOGGLES) document.getElementById(id).disabled = true;
+        elements.optBadgeSize.disabled = true;
+    },
+    onSnapshot: (snapshot, state) => applyProfileSnapshot(snapshot, state)
+});
 
 async function initialize() {
     for (const slot of document.querySelectorAll('[data-settings-icon]')) {
@@ -88,12 +110,15 @@ async function initialize() {
     setupNav();
     setupEventListeners();
     browserAPI.runtime.onMessage.addListener(handleMessage);
+    profilePicker = createProfilePicker({ client: profileClient, manage: true });
     window.addEventListener('beforeunload', () => {
         browserAPI.runtime.onMessage.removeListener(handleMessage);
         pendingReleaseNavigation = null;
         blockingEditor?.destroy();
         statisticsView?.destroy();
         clearTimeout(saveStatusTimeout);
+        profilePicker?.dispose();
+        profileClient.dispose();
     });
 
     // The page is usable before slow status requests finish.
@@ -264,6 +289,7 @@ function acceptList(source, data, revision) {
 }
 
 function handleMessage(message) {
+    if (profileClient.accept(message) || message?.profileId || Object.values(PROFILE_MESSAGES).includes(message?.type)) return;
     if (message?.type === MESSAGE_TYPES.SETTINGS_UPDATED) {
         acceptSettings(message.payload, message.revision);
     } else if (message?.type === MESSAGE_TYPES.THEME_UPDATED && typeof message.payload === 'string') {
@@ -274,39 +300,53 @@ function handleMessage(message) {
     }
 }
 
+/** One committed profile snapshot changes every rule before the browser paints. */
+function applyProfileSnapshot(snapshot, state) {
+    if (!snapshot?.settings || !snapshot.filters) return;
+    acceptSettings(snapshot.settings, snapshot.revision);
+    for (const source of LISTS) acceptList(source, snapshot.filters[source.field] || [], snapshot.revision);
+    mountBlockingEditor();
+    document.getElementById('blocking-editor').removeAttribute('aria-busy');
+    for (const [id] of TOGGLES) document.getElementById(id).disabled = false;
+    elements.optBadgeSize.disabled = false;
+    // A reload must reopen the profile selected here, preserving this page's account.
+    const url = new URL(window.location.href);
+    if (state.accountId) url.searchParams.set('accountId', state.accountId);
+    else url.searchParams.delete('accountId');
+    url.searchParams.set('profileId', state.profileId);
+    window.history.replaceState({}, document.title, url);
+    applyPendingReleaseNavigation();
+}
+
+function mountBlockingEditor() {
+    if (blockingEditor || !settingsLoaded) return;
+    const host = document.getElementById('blocking-editor');
+    host.replaceChildren();
+    const callbacks = Object.fromEntries(LISTS.map(source => [
+        source.callback, (action, value) => mutateList(source, action, value)
+    ]));
+    blockingEditor = mountBlockingSettings(host, {
+        ...listState, settings: currentSettings, stateRevisions: snapshots.snapshot(),
+        ...callbacks, onSettingsChange: saveSettings
+    });
+    host.querySelector('.xp-g-heading').append(profilePicker.element);
+}
+
 async function loadConfiguration() {
+    const request = ++configurationRequest;
     const host = document.getElementById('blocking-editor');
     if (!blockingEditor) {
         host.textContent = 'Loading your filters...';
         host.setAttribute('aria-busy', 'true');
     }
     try {
-        const requests = [
-            browserAPI.runtime.sendMessage({ type: MESSAGE_TYPES.GET_SETTINGS }).then(response => {
-                if (!response?.success || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
-                    throw new Error('Could not read settings');
-                }
-                acceptSettings(response.data, response.revision);
-            }),
-            ...LISTS.map(async source => {
-                const response = await browserAPI.runtime.sendMessage({ type: source.get });
-                if (!response?.success || !Array.isArray(response.data)) throw new Error(`Could not read ${source.label}`);
-                acceptList(source, response.data, response.revision);
-            })
-        ];
-        // Wait for all reads before offering a retry or creating an editable surface.
-        const results = await Promise.allSettled(requests);
-        if (results.some(result => result.status === 'rejected')) throw new Error('Incomplete settings snapshot');
-        if (!blockingEditor) {
-            host.replaceChildren();
-            const callbacks = Object.fromEntries(LISTS.map(source => [
-                source.callback, (action, value) => mutateList(source, action, value)
-            ]));
-            blockingEditor = mountBlockingSettings(host, {
-                ...listState, settings: currentSettings, stateRevisions: snapshots.snapshot(),
-                ...callbacks, onSettingsChange: saveSettings
-            });
-        }
+        const context = profileClient.state.ready
+            ? { accountId: profileClient.state.accountId, profileId: profileClient.state.profileId }
+            : await resolveActiveProfileContext(browserAPI);
+        const response = await profileClient.initialize(context);
+        if (request !== configurationRequest) return false;
+        if (response?.success === false || !profileClient.state.ready) throw new Error('Incomplete settings snapshot');
+        mountBlockingEditor();
         return true;
     } catch (error) {
         console.error('Failed to load settings:', error);
@@ -331,7 +371,7 @@ async function loadConfiguration() {
 }
 
 async function mutateList(source, action, value) {
-    const response = await browserAPI.runtime.sendMessage({
+    const response = await profileClient.send({
         type: source.set, payload: { action, [source.valueKey]: value }
     });
     if (!response?.success || !Array.isArray(response.data)) return { success: false };
@@ -340,8 +380,10 @@ async function mutateList(source, action, value) {
 }
 
 async function saveSettings(newSettings) {
+    const generation = profileClient.state.generation;
     try {
-        const response = await browserAPI.runtime.sendMessage({ type: MESSAGE_TYPES.SET_SETTINGS, payload: newSettings });
+        const response = await profileClient.send({ type: MESSAGE_TYPES.SET_SETTINGS, payload: newSettings });
+        if (response?.code === 'CANCELLED') return { success: false };
         if (!response?.success || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
             throw new Error('Save failed');
         }
@@ -358,6 +400,7 @@ async function saveSettings(newSettings) {
             } : {})
         };
     } catch (error) {
+        if (generation !== profileClient.state.generation) return { success: false };
         console.error('Failed to save settings:', error);
         applySettingsToInputs();
         showSaveStatus('Could not save settings. Please try again.', true);
@@ -499,11 +542,12 @@ async function exportBackup() {
         const sources = [
             ['settings', MESSAGE_TYPES.GET_SETTINGS],
             ...FILTER_SOURCES.map(source => [source.field, source.get]),
+            ['profiles', PROFILE_MESSAGES.EXPORT_PROFILES],
             ['cache', MESSAGE_TYPES.GET_CACHE],
             ['theme', MESSAGE_TYPES.GET_THEME],
             ['cloudCacheEnabled', MESSAGE_TYPES.GET_CLOUD_CACHE_STATUS]
         ];
-        const responses = await Promise.all(sources.map(([, type]) => browserAPI.runtime.sendMessage({ type, payload: {} })));
+        const responses = await Promise.all(sources.map(([, type]) => profileClient.send({ type, payload: {} })));
         const data = {};
         for (const [index, [key]] of sources.entries()) {
             const response = responses[index];
@@ -547,6 +591,7 @@ async function handleImportFile(file) {
         const entries = LISTS.filter(source => Array.isArray(payload[source.field]))
             .map(source => `${data[source.field].length} ${source.label}`);
         if (payload.settings) entries.unshift('Settings');
+        if (payload.profiles) entries.push(`${payload.profiles.profiles.length} saved profiles`);
         if (Object.hasOwn(payload, 'theme')) entries.push(`Theme: ${payload.theme}`);
         if (Object.hasOwn(payload, 'cloudCacheEnabled')) entries.push(`Community cache: ${payload.cloudCacheEnabled ? 'on' : 'off'}`);
         if (Array.isArray(payload.cache)) entries.push(`${payload.cache.length} cached accounts`);
@@ -556,7 +601,7 @@ async function handleImportFile(file) {
             'Included settings, preferences and filter lists will replace their current values. Fields missing from this backup will be kept. Cached accounts will be merged.',
             'Continue?'
         ].join('\n\n'))) return;
-        const response = await browserAPI.runtime.sendMessage({ type: MESSAGE_TYPES.IMPORT_DATA, payload });
+        const response = await profileClient.send({ type: MESSAGE_TYPES.IMPORT_DATA, payload });
         if (!response?.success) throw new Error(response?.error || 'Import failed');
         const loaded = await loadConfiguration();
         await Promise.all([loadCacheStats(), loadStatistics(), loadTheme(), loadCloudCacheStatus()]);

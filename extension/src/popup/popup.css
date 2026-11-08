@@ -19,6 +19,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 button:focus:not(:focus-visible) { outline: none; }
 ::selection { background: var(--xp-accent); color: var(--xp-on-accent); }
 .app { padding: 18px 20px 0; }
+#profile-picker-host { padding-block: 3px; }
+#profile-picker-host .xp-profile-row { flex-wrap: nowrap; justify-content: space-between; min-block-size: 38px; }
+#profile-picker-host .xp-profile-label { color: var(--xp-text); }
+#profile-picker-host .xp-profile-select { min-inline-size: 100px; max-inline-size: 58%; }
 .popup-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex: 0 0 18px; }
 .popup-icon svg { display: block; width: 18px; height: 18px; }
 

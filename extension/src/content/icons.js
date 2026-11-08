@@ -158,20 +158,26 @@ export function glyph(name, size = 16) {
 }
 
 /**
- * Build a flag <img> element (Twemoji SVG) for a country name, or null when the
- * country is unknown (callers fall back to the location text alone). Renders on
- * every OS, unlike regional-indicator emoji which fail on Windows.
+ * Existing Twemoji flag asset for a country, without creating an image request.
+ * Unknown countries and region labels have no flag.
  * @param {string|null|undefined} countryName
- * @returns {HTMLImageElement|null}
+ * @returns {string|null}
  */
-export function flagImage(countryName) {
+export function flagImageUrl(countryName) {
     if (!countryName) return null;
     const emoji = COUNTRY_FLAGS[canonicalCountry(countryName)];
     if (!emoji || emoji === '🌍') return null;
     const cp = Array.from(emoji).map(c => c.codePointAt(0).toString(16)).join('-');
+    return `https://abs-0.twimg.com/emoji/v2/svg/${cp}.svg`;
+}
+
+/** Build a flag image that renders consistently on every OS, including Windows. */
+export function flagImage(countryName) {
+    const src = flagImageUrl(countryName);
+    if (!src) return null;
     const img = document.createElement('img');
     img.className = 'x-flag-emoji';
-    img.src = `https://abs-0.twimg.com/emoji/v2/svg/${cp}.svg`;
+    img.src = src;
     img.alt = '';
     img.loading = 'lazy';
     img.referrerPolicy = 'no-referrer';

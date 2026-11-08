@@ -13,6 +13,7 @@ export function createSnapshotTracker(initialRevisions = {}) {
             revisions[key] = revision;
             return true;
         },
-        snapshot() { return { ...revisions }; }
+        snapshot() { return { ...revisions }; },
+        reset() { for (const key of Object.keys(revisions)) delete revisions[key]; }
     };
 }

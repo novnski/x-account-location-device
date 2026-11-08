@@ -1601,16 +1601,19 @@ export async function processElement(element, {
         // Issue #14: if the background can't authenticate (e.g. a Firefox container
         // cookie mismatch), retry the lookup from the PAGE context — which uses the
         // page's own correct session — then cache the result via the background.
-        if ((response?.code === 'UNAUTHORIZED' || response?.code === 'NO_HEADERS') && fetchUserInfoViaPage) {
-            const pageResponse = await fetchUserInfoViaPage(screenName);
+        if (['UNAUTHORIZED', 'NO_HEADERS', 'PAGE_CONTEXT_REQUIRED'].includes(response?.code) && fetchUserInfoViaPage) {
+            const pageResponse = await fetchUserInfoViaPage(screenName, { fullMetadata: response.code === 'PAGE_CONTEXT_REQUIRED' });
             if (!isCurrentProcessing()) return;
             // Keep the page's actual failure code too, so a rate limit or timeout
             // isn't mislabeled as the background's original authentication failure.
-            if (pageResponse) response = { ...pageResponse, source: 'page' };
+            if (pageResponse) {
+                response = { ...pageResponse, source: 'page',
+                    ...(pageResponse.success ? { data: { ...pageResponse.data, timestamp: Date.now(), fromCloud: false } } : {}) };
+            }
             if (pageResponse?.success) {
                 await sendMessage({
                     type: MESSAGE_TYPES.SET_CACHE,
-                    payload: { screenName, data: pageResponse.data }
+                    payload: { screenName, data: response.data, fromPage: true }
                 });
                 if (!isCurrentProcessing()) return;
             }

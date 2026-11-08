@@ -6,6 +6,9 @@ import browserAPI from '../shared/browser-api.js';
 import { MESSAGE_TYPES, VERSION, TIMING, STORAGE_KEYS } from '../shared/constants.js';
 import { createSnapshotTracker } from '../shared/state-sync.js';
 import { dialogIcon } from '../content/dialog-icons.js';
+import { createProfileClient, resolveActiveProfileContext } from '../shared/profile-client.js';
+import { createProfilePicker } from '../shared/profile-picker.js';
+import { PROFILE_MESSAGES } from '../shared/profiles.js';
 
 const TOGGLES = [
     ['toggle-enabled', 'enabled', true],
@@ -34,6 +37,17 @@ let cloudAllowed = false;
 let communityTotal = null;
 let communityVersion = 0;
 let clearingCache = false;
+let profilePicker = null;
+const profileClient = createProfileClient({
+    followEditorSelection: true,
+    transport: message => browserAPI.runtime.sendMessage(message),
+    onContextChange: () => {
+        snapshots.reset();
+        settingsLoaded = false;
+        renderSettings();
+    },
+    onSnapshot: snapshot => acceptSettings(snapshot.settings, snapshot.revision)
+});
 
 function initialize() {
     for (const slot of document.querySelectorAll('[data-popup-icon]')) {
@@ -42,6 +56,8 @@ function initialize() {
     document.querySelector('.version').textContent = `v${VERSION}`;
     setupEventListeners();
     browserAPI.runtime.onMessage.addListener(handleMessage);
+    profilePicker = createProfilePicker({ client: profileClient, label: 'Filter profile' });
+    byId('profile-picker-host').append(profilePicker.element);
     browserAPI.storage.onChanged.addListener(handleStorageChange);
     window.addEventListener('pagehide', cleanup, { once: true });
     renderSettings();
@@ -58,6 +74,8 @@ function cleanup() {
     clearInterval(rateLimitInterval);
     browserAPI.runtime.onMessage.removeListener(handleMessage);
     browserAPI.storage.onChanged.removeListener(handleStorageChange);
+    profilePicker?.dispose();
+    profileClient.dispose();
 }
 
 function setStatus(message, error = false) {
@@ -104,12 +122,14 @@ async function loadSettings() {
     const retry = byId('btn-retry-settings');
     retry.disabled = true;
     try {
-        const response = await browserAPI.runtime.sendMessage({ type: MESSAGE_TYPES.GET_SETTINGS });
+        const context = profileClient.state.ready
+            ? { accountId: profileClient.state.accountId, profileId: profileClient.state.profileId }
+            : await resolveActiveProfileContext(browserAPI);
+        const response = await profileClient.initialize(context);
         if (closed || request !== settingsRequest) return;
-        if (!response?.success || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+        if (response?.success === false || !profileClient.state.ready) {
             throw new Error('Could not read settings');
         }
-        acceptSettings(response.data, response.revision);
     } catch {
         if (closed || request !== settingsRequest) return;
         settingsFailed = !settingsLoaded;
@@ -124,14 +144,15 @@ async function loadSettings() {
 
 async function saveToggle(id, key, value) {
     if (!settingsLoaded || pending.has(id)) return;
+    const generation = profileClient.state.generation;
     pending.add(id);
     renderSettings();
     setStatus('Saving...');
     try {
-        const response = await browserAPI.runtime.sendMessage({
+        const response = await profileClient.send({
             type: MESSAGE_TYPES.SET_SETTINGS, payload: { [key]: value }
         });
-        if (closed) return;
+        if (closed || response?.code === 'CANCELLED') return;
         if (!response?.success || !response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
             throw new Error('Save failed');
         }
@@ -139,6 +160,7 @@ async function saveToggle(id, key, value) {
         acceptSettings(response.data, response.revision);
         setStatus('Changes saved');
     } catch {
+        if (generation !== profileClient.state.generation) return;
         setStatus('Could not save this change. Your previous setting is unchanged.', true);
     } finally {
         pending.delete(id);
@@ -147,6 +169,7 @@ async function saveToggle(id, key, value) {
 }
 
 function handleMessage(message) {
+    if (profileClient.accept(message) || message?.profileId || Object.values(PROFILE_MESSAGES).includes(message?.type)) return;
     if (message?.type === MESSAGE_TYPES.SETTINGS_UPDATED) {
         acceptSettings(message.payload, message.revision);
     } else if (message?.type === MESSAGE_TYPES.THEME_UPDATED && typeof message.payload === 'string') {
@@ -290,14 +313,12 @@ async function openSettings(blocking = false) {
     const button = byId(blocking ? 'btn-blocking' : 'btn-options');
     button.disabled = true;
     try {
-        if (blocking) {
-            await browserAPI.tabs.create({ url: browserAPI.runtime.getURL('options/options.html#panel-blocking') });
-        } else if (typeof browserAPI.runtime.openOptionsPage === 'function') {
-            try { await browserAPI.runtime.openOptionsPage(); }
-            catch { await browserAPI.tabs.create({ url: browserAPI.runtime.getURL('options/options.html') }); }
-        } else {
-            await browserAPI.tabs.create({ url: browserAPI.runtime.getURL('options/options.html') });
-        }
+        const url = new URL(browserAPI.runtime.getURL('options/options.html'));
+        const context = profileClient.state;
+        if (context.accountId) url.searchParams.set('accountId', context.accountId);
+        if (context.profileId) url.searchParams.set('profileId', context.profileId);
+        if (blocking) url.hash = 'panel-blocking';
+        await browserAPI.tabs.create({ url: url.href });
         // Firefox mobile leaves the toolbar surface open after the new tab appears.
         try { window.close(); } catch { /* Some hosts do not allow self-close. */ }
     } catch {

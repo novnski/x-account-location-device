@@ -4,8 +4,9 @@ import { FILTER_SOURCES } from './filter-registry.js';
 import { ACCOUNT_COUNT_FILTERS, isAccountCountThreshold } from './account-counts.js';
 import { BADGE_SIZES } from './badge-appearance.js';
 import { normalizeRegionCountrySelections } from './region-membership.js';
+import { normalizeProfilesBackup } from './profiles.js';
 
-export const BACKUP_FORMAT = '2.4';
+export const BACKUP_FORMAT = '2.5';
 
 /** Validate the complete supplied configuration before any import writes begin. */
 export function prepareBackupImport(data) {
@@ -13,6 +14,7 @@ export function prepareBackupImport(data) {
         throw new TypeError('Backup data must be an object.');
     }
     const result = {};
+    if (Object.hasOwn(data, 'profiles')) result.profiles = normalizeProfilesBackup(data.profiles);
     if (Object.hasOwn(data, 'settings')) {
         if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings)) {
             throw new TypeError('Backup settings must be an object.');

@@ -1,6 +1,6 @@
 {
   "name": "x-posed-extension",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "description": "See where X users are located and what devices they use. Country flags & device icons next to every username. Optional geo-blocking.",
   "type": "module",
   "scripts": {
@@ -17,9 +17,12 @@
     "package:firefox": "rimraf dist/firefox && npm run build:firefox && node scripts/zip.js firefox",
     "package": "npm run package:chrome && npm run package:firefox",
     "check:parsers": "node scripts/check-parsers.mjs",
+    "check:chat": "node scripts/check-chat-data.mjs && node scripts/check-chat-network.mjs",
+    "check:profiles": "node scripts/check-profiles.mjs && node scripts/check-profile-client.mjs && node scripts/check-profile-lookups.mjs",
     "check:regions": "node scripts/check-regions.mjs",
     "check:lists": "node scripts/check-list-highlighting.mjs",
     "check:quick-filters": "node scripts/check-quick-filters.mjs",
+    "check:post-card": "node scripts/check-post-card.mjs",
     "check:hover-intent": "node scripts/check-hover-intent.mjs",
     "check:hover-cache": "node scripts/check-hover-cache.mjs",
     "check:hover-loading": "node scripts/check-hover-loading.mjs",

@@ -74,8 +74,16 @@ class ElementDouble extends EventTargetDouble {
         return null;
     }
     matches(selector) { return selector === ':hover' && this.hovered; }
+    getRootNode() { return this.root || this.parent?.getRootNode?.() || this.document; }
     replaceChildren() {}
-    focus() { this.document.activeElement = this; }
+    focus() {
+        const root = this.getRootNode();
+        for (const shadow of this.document.shadowRoots || []) {
+            if (shadow !== root) shadow.activeElement = null;
+        }
+        root.activeElement = this;
+        this.document.activeElement = root.host || this;
+    }
     remove() { this.isConnected = false; }
     enter() { this.hovered = true; this.dispatch('mouseenter'); }
     leave() { this.hovered = false; this.dispatch('mouseleave'); }
@@ -87,11 +95,13 @@ function environment({ touch = false, clickOnly = false } = {}) {
     const timers = new Map();
     const document = new EventTargetDouble();
     document.activeElement = null;
+    document.shadowRoots = new Set();
     document.hidden = false;
     const window = new EventTargetDouble();
     window.matchMedia = () => ({ matches: !touch });
     class ClockDate extends Date { static now() { return 1800000000000 + time; } }
     const requests = [];
+    const positions = [];
     const tooltips = [];
     const card = new ElementDouble(document);
     card.close = new ElementDouble(document);
@@ -113,7 +123,7 @@ function environment({ touch = false, clickOnly = false } = {}) {
         cancelAnimationFrame: id => timers.delete(id),
         queueMicrotask: callback => callback(),
         resolveDisplayNamePresentation: value => value,
-        positionCard() {}, setLocationWarningHelp() {},
+        positionCard: (...args) => positions.push(args), setLocationWarningHelp() {},
         createCardTooltip() {
             const tooltip = { dismissResult: false, dismissCalls: 0, disposeCalls: 0,
                 refresh() {},
@@ -140,6 +150,16 @@ function environment({ touch = false, clickOnly = false } = {}) {
         controller.attach(node, { ...options(screenName), clickToOpen: clickOnly });
         return node;
     };
+    const shadowBadge = screenName => {
+        const root = new EventTargetDouble();
+        root.host = new ElementDouble(document);
+        root.activeElement = null;
+        root.host.shadowRoot = root;
+        document.shadowRoots.add(root);
+        const node = badge(screenName);
+        node.root = root;
+        return { node, root };
+    };
     const advance = amount => {
         const target = time + amount;
         for (;;) {
@@ -160,8 +180,12 @@ function environment({ touch = false, clickOnly = false } = {}) {
                     false, `Remove pending-only ${type} listener`);
             }
         }
+        for (const root of document.shadowRoots) {
+            assert.equal(root.listeners.get('scroll')?.has(controller._handleHoverIntentCancel) || false,
+                false, 'Remove pending shadow-scroll listener');
+        }
     };
-    return { controller, document, window, requests, tooltips, card, badge, advance, options,
+    return { controller, document, window, requests, positions, tooltips, card, badge, shadowBadge, advance, options,
         noIntentListeners, timers };
 }
 
@@ -413,6 +437,70 @@ check('protection acquired during the delay is checked again at delivery', () =>
         assert.deepEqual(e.requests, ['alpha']);
         e.noIntentListeners();
     }
+});
+
+check('Retargeted shadow badge taps stay inside the card trigger and preserve click toggling', () => {
+    const e = environment(); const { node: a, root } = e.shadowBadge('alpha');
+    a.dispatch('click', { target: a.details });
+    e.document.dispatch('pointerdown', {
+        target: root.host, composedPath: () => [a.details, a, root, root.host, e.document]
+    });
+    assert.equal(e.controller.currentAnchor, a, 'The composed path identifies the real badge beneath the host');
+    a.dispatch('click', { target: a.details });
+    assert.equal(e.controller.currentAnchor, null, 'A second deliberate click closes the pinned card');
+    assert.deepEqual(e.requests, ['alpha'], 'Closing a card cannot request it again');
+    a.dispatch('click', { target: a.details });
+    e.document.dispatch('pointerdown', { target: root.host, composedPath: () => [root.host, e.document] });
+    assert.equal(e.controller.currentAnchor, null, 'Other content in the same host is still outside the badge');
+});
+
+check('Focused shadow controls protect the card and own Escape without relying on document.activeElement', () => {
+    const e = environment(); const { node: a, root } = e.shadowBadge('alpha');
+    const b = e.badge('beta');
+    a.enter(); e.advance(300); a.details.focus();
+    assert.equal(e.document.activeElement, root.host);
+    assert.equal(root.activeElement, a.details);
+    a.leave(); e.advance(1000);
+    b.enter(); e.advance(500);
+    assert.equal(e.controller.currentAnchor, a, 'A focused shadow trigger protects its open view');
+    const escape = e.document.dispatch('keydown', { key: 'Escape', target: root.host });
+    assert.equal(escape.prevented, true); assert.equal(escape.stopped, true);
+    assert.equal(e.controller.currentAnchor, null);
+    assert.equal(root.activeElement, a.details);
+});
+
+check('Keyboard closing restores the real shadow control behind the retargeted host', () => {
+    const e = environment(); const { node: a, root } = e.shadowBadge('alpha');
+    a.dispatch('click', { target: a.details, detail: 0 });
+    assert.equal(e.document.activeElement, e.card.close);
+    e.document.dispatch('keydown', { key: 'Escape' });
+    assert.equal(root.activeElement, a.details);
+    assert.equal(e.document.activeElement, root.host);
+});
+
+check('Non-composed shadow scrolling cancels unopened hover without a lookup or leaked listener', () => {
+    const e = environment(); const { node: a, root } = e.shadowBadge('alpha');
+    a.enter();
+    assert.equal(root.listeners.get('scroll').has(e.controller._handleHoverIntentCancel), true);
+    root.dispatch('scroll'); e.advance(500);
+    assert.deepEqual(e.requests, []);
+    assert.equal(e.controller.hoverIntent, null);
+    e.noIntentListeners();
+});
+
+check('Visible cards follow shadow scrolling and move or dispose their root listener with the anchor', () => {
+    const e = environment(); const { node: a, root: first } = e.shadowBadge('alpha');
+    const { node: replacement, root: second } = e.shadowBadge('alpha');
+    a.enter(); e.advance(300);
+    const initial = e.positions.length;
+    first.dispatch('scroll'); first.dispatch('scroll'); e.advance(1);
+    assert.equal(e.positions.length, initial + 1, 'Native shadow scroll bursts share the existing animation frame');
+    e.controller.replaceAnchor(a, replacement);
+    assert.equal(first.listeners.get('scroll').size, 0);
+    assert.equal(second.listeners.get('scroll').has(e.controller._handleScroll), true);
+    e.controller.teardown();
+    assert.equal(second.listeners.get('scroll').size, 0);
+    assert.equal(e.timers.size, 0);
 });
 
 console.log(`Hover intent regression checks passed (${groups} groups).`);

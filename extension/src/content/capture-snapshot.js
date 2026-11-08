@@ -43,7 +43,7 @@ function readIdentity(scope, article, screenName) {
         const id = statusIdOf(href);
         if (!id || (!isQuote && id !== ownId)) continue;
         const path = new URL(href, 'https://x.com').pathname;
-        const author = /^\/([a-zA-Z0-9_]{1,15})\/status\//.exec(path)?.[1];
+        const author = path.startsWith('/i/status/') ? null : /^\/([a-zA-Z0-9_]{1,15})\/status\//.exec(path)?.[1];
         if (author && author.toLowerCase() !== screenName.toLowerCase()) throw unavailable(isQuote);
         candidates.push({ id, timestamp: time.getAttribute('datetime') || time.textContent.trim() });
     }
@@ -52,7 +52,8 @@ function readIdentity(scope, article, screenName) {
 
     return {
         timestamp: candidates[0].timestamp,
-        tweetUrl: `https://x.com/${screenName}/status/${candidates[0].id}`
+        // Keep every shared source independent of the author's current handle.
+        tweetUrl: `https://x.com/i/status/${candidates[0].id}`
     };
 }
 

@@ -47,7 +47,7 @@ function environment() {
         }
     };
     const context = vm.createContext({
-        userInfoCache, badgeSnapshots, document,
+        userInfoCache, badgeSnapshots, document, chatBadges: null,
         CSS_CLASSES: { INFO_BADGE: 'badge' }, SELECTORS: { USERNAME: 'user', USER_CELL: 'cell' },
         filterSets: { blockedAffiliations: new Set(), blockedAccounts: new Set() },
         updateBlockedTweets: (...args) => filterPasses.push(args),
