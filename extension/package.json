@@ -1,7 +1,7 @@
 {
-  "name": "x-posed-extension",
+  "name": "x-posed-europe-us",
   "version": "4.4.0",
-  "description": "See where X users are located and what devices they use. Country flags & device icons next to every username. Optional geo-blocking.",
+  "description": "Personal X-Posed fork with Europe and United States timeline filtering.",
   "type": "module",
   "scripts": {
     "dev": "rollup -c -w",
@@ -20,6 +20,8 @@
     "check:chat": "node scripts/check-chat-data.mjs && node scripts/check-chat-network.mjs",
     "check:profiles": "node scripts/check-profiles.mjs && node scripts/check-profile-client.mjs && node scripts/check-profile-lookups.mjs",
     "check:regions": "node scripts/check-regions.mjs",
+    "check:locations": "node --test scripts/check-locations.mjs",
+    "check:browser": "node scripts/check-browser.mjs",
     "check:lists": "node scripts/check-list-highlighting.mjs",
     "check:quick-filters": "node scripts/check-quick-filters.mjs",
     "check:post-card": "node scripts/check-post-card.mjs",
@@ -42,6 +44,7 @@
     "archiver": "^6.0.1",
     "cross-env": "^7.0.3",
     "eslint": "^8.56.0",
+    "playwright": "^1.65.0",
     "rimraf": "^5.0.5",
     "rollup": "^4.9.6",
     "rollup-plugin-copy": "^3.5.0"
@@ -59,13 +62,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xaitax/x-account-location-device"
+    "url": "https://github.com/novnski/x-account-location-device"
   },
   "bugs": {
-    "url": "https://github.com/xaitax/x-account-location-device/issues"
+    "url": "https://github.com/novnski/x-account-location-device/issues"
   },
-  "homepage": "https://github.com/xaitax/x-account-location-device#readme",
+  "homepage": "https://github.com/novnski/x-account-location-device#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

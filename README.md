@@ -1,3 +1,31 @@
+# X-Posed: Europe + US fork
+
+Personal fork of [Alexander Hagenah's X-Posed](https://github.com/xaitax/x-account-location-device), based on version 4.4.0. The upstream documentation and credits are preserved below. Store links below install the upstream extension, not this fork.
+
+## What this fork adds
+
+- **Manage filters > Locations > Only keep Europe and the United States** filters accounts based elsewhere. Choose Hide or Highlight. The mode is optional and off until enabled.
+- Uses **Account based in**, independently of the app-store country used for flags.
+- Unknown locations remain visible unless **Also filter unknown locations** is enabled. Pending requests and failures stay visible. A broad region containing both allowed and excluded countries, such as North America, counts as unknown.
+- Keeps the upstream Europe country/territory grouping and adds Cyprus. Accepts the Europe, European Union and Eastern Europe (Non-EU) labels. Russia is included; Turkey and the Caucasus are excluded. The complete included list is available in Locations.
+- Works with existing Always Show exceptions, Hide/Highlight, quote controls, live updates, saved profiles and backups. Other saved rules can still filter allowed locations.
+- Community Cache is **opt-in on new installs**. Enabling it shares public handles and account metadata with the upstream cache service as described in [PRIVACY.md](PRIVACY.md). Existing preferences are preserved on updates.
+
+## Install this fork in Chrome
+
+1. With Node.js 20 or newer, in `extension/`, run `npm ci`, `npm run build`, and `npm run check:build`.
+2. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+3. Select this checkout's `extension/dist/chrome` directory.
+4. Reload X, open the extension's **Manage filters**, and enable the mode in **Locations**. Hide is the default action.
+
+This fork has a distinct extension name and Firefox ID. Avoid enabling the upstream extension and this fork on X at the same time because both modify timeline posts. It is not published to a browser store.
+
+Run `npm run check:locations` for the location-filter checks. The build also produces `extension/dist/firefox` for temporary loading through `about:debugging`.
+
+For a browser smoke test, run `npx playwright install chromium` once, then `npm run check:browser` after building. It loads the actual Chrome extension into an isolated profile with a synthetic timeline and local account observations. All HTTP traffic is fulfilled locally or aborted; it does not access a real X account. Screenshots are written under `extension/.tmp/browser/`.
+
+---
+
 <p align="center">
   <img src="extension/icons/logo.svg" width="64" height="64" alt="X-Posed logo">
 </p>
@@ -204,7 +232,7 @@ Real screenshots of X-Posed 4.3. Filter screens use example settings.
 
 - No X-Posed account, usage analytics or advertising. Filtering statistics remain in your browser.
 - The extension uses your existing X session. Captured authorization and CSRF headers are stored locally and sent only to X, never to the community cache.
-- The community cache is **enabled on new installs** and can be turned off under **Settings → Cloud Cache**. It shares public handles and account metadata, not post text, biographies, private messages or session headers. These records are identifiable, not anonymous.
+- In this fork, the community cache is **disabled on new installs** and can be enabled under **Settings > Cloud Cache**. It shares public handles and account metadata, not post text, biographies, private messages or session headers. These records are identifiable, not anonymous.
 - Profile text, links, labels and counts read from X's existing timeline responses stay in page-session memory. Turn this off under **Blocking → Behavior → Use profile details**.
 - X's labels and shared cache records can be incomplete, stale or incorrect. Check important findings against X. Rate-limit handling cannot guarantee protection from X's account enforcement.
 
@@ -232,7 +260,7 @@ Check the network before sending. Send BTC on Bitcoin, and ETH or USDC on Ethere
 
 ## Build from source
 
-Use Node.js 18 or newer and npm.
+Use Node.js 20 or newer and npm for this fork.
 
 ```bash
 git clone https://github.com/xaitax/x-account-location-device.git

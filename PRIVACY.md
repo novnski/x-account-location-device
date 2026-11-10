@@ -7,7 +7,7 @@ This policy describes the current browser-extension source of X-Posed: Account L
 ## In brief
 
 - X-Posed reads account information and post elements on X to display labels and apply your filters locally. It does not block or mute accounts through X.
-- Community Cache is enabled by default on new installations. Updates preserve your existing choice. You can turn it off in Settings.
+- In this Europe + US fork, Community Cache is disabled by default on new installations. Updates preserve your existing choice. You can opt in through Settings.
 - Community lookups send the requested public account handles to the cache server. Contributions share a limited set of account metadata. Handles and account IDs are identifiable data, not anonymous records.
 - X authentication headers are stored locally and used only for requests to X. They are not sent to Community Cache.
 - Filter rules and filtering statistics stay local unless you choose to export rules in a backup. There is no usage-analytics or advertising code in the extension.

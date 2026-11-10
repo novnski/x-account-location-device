@@ -760,6 +760,7 @@ async function handleBackgroundMessage(type, payload, revision) {
             }
             if (isEnabled && (!areRegionCountrySelectionsEqual(prevSettings.regionCountrySelections, settings.regionCountrySelections) ||
                 ['highlightInLists', 'profileEnrichment', 'bioTagsMatchLocation', 'linksMatchLocation',
+                    'europeUsOnly', 'hideUnknownLocations',
                     ...ACCOUNT_COUNT_FILTERS.map(rule => rule.key)]
                     .some(key => prevSettings[key] !== settings[key]))) {
                 updateBlockedTweets(currentFilters());

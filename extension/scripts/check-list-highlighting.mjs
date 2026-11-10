@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS, STORAGE_KEYS } from '../src/shared/constants.js';
 import { ACCOUNT_COUNT_FILTERS, isAccountCountThreshold } from '../src/shared/account-counts.js';
 import { BADGE_SIZES, normalizeBadgeSize } from '../src/shared/badge-appearance.js';
 import { normalizeRegionCountrySelections } from '../src/shared/region-membership.js';
+import { locationFocusReason } from '../src/shared/location-focus.js';
 
 function productionDeclarations(path, names) {
     const source = fs.readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -46,7 +47,7 @@ function environment() {
     const profile = new Map();
     const location = { pathname: '/home' };
     const context = vm.createContext({
-        location,
+        location, locationFocusReason, userInfoCache: new Map(),
         isFollowing: author => following.has(author),
         getLoggedInUsername: () => 'reader',
         isInsideQuoteTweet: element => element.quote,

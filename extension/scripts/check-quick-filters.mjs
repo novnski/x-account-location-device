@@ -12,6 +12,7 @@ import { DEFAULT_SETTINGS, MESSAGE_TYPES, STORAGE_KEYS, COUNTRY_LIST, REGION_NAM
 import { FILTER_SOURCES } from '../src/shared/filter-registry.js';
 import { prepareBackupImport } from '../src/shared/backup.js';
 import { matchingBlockedRegions } from '../src/shared/region-membership.js';
+import { locationFocusReason } from '../src/shared/location-focus.js';
 import { ACCOUNT_COUNT_FILTERS, isAccountCountThreshold, matchesAccountCount } from '../src/shared/account-counts.js';
 import { PROFILE_LIMITS, projectProfileUser, profilePatchFromWire, mergeProjectedProfile } from '../src/shared/profile-data.js';
 import { setProfile, getProfile, clearProfiles } from '../src/content/profile-cache.js';
@@ -78,7 +79,8 @@ function environment() {
     const following = new Set(), profiles = new Map(), info = new Map();
     const location = { pathname: '/home' };
     const context = vm.createContext({
-        location, canonicalCountry, matchingBlockedRegions, GOVERNMENT_LABEL, observedAccountId, normalizeAccountId,
+        location, canonicalCountry, matchingBlockedRegions, locationFocusReason, userInfoCache: info,
+        GOVERNMENT_LABEL, observedAccountId, normalizeAccountId,
         BLOCK_REASON_LABELS: { account: 'Account', country: 'Country', region: 'Region', tag: 'Display name' },
         isFollowing: name => following.has(name), getLoggedInUsername: () => 'reader',
         isInsideQuoteTweet: element => element.quote === true,
@@ -939,6 +941,67 @@ await check('Completed feedback clears when identity changes and Always Show rem
         assert.equal(e.button(kind).getAttribute('title'), null);
     }
     assert.deepEqual(e.state.blockedAccounts, [ACCOUNT_ID]);
+});
+
+await check('Location focus uses account country and follows live setting changes', () => {
+    const e = environment(), f = filters({ europeUsOnly: true, flagFromDevice: true });
+    const element = node({ country: 'united states' });
+    const info = { location: 'India', device: 'United States App Store' };
+    let result = apply(e, 'alice', f, { element, info });
+    assert.deepEqual(Array.from(result.state.reasons), ['locationFocus']);
+    assert.equal(result.verdict.hide, true);
+    f.settings.europeUsOnly = false;
+    result = apply(e, 'alice', f, { element, info });
+    assert.equal(result.verdict.hide, false);
+    f.settings.europeUsOnly = true;
+    result = apply(e, 'alice', f, { element: node({ country: 'india' }), info: { location: 'Romania' } });
+    assert.equal(result.verdict.hide, false, 'Device country cannot override allowed account location');
+    f.blockedCountries.add('romania');
+    result = apply(e, 'alice', f, { element: node({ country: 'romania' }), info: { location: 'Romania' } });
+    assert.deepEqual(Array.from(result.state.reasons), ['country'], 'Existing explicit filters still apply');
+});
+
+await check('Unknown filtering leaves pending lookups visible and handles definitive misses', () => {
+    const e = environment(), f = filters({ europeUsOnly: true, hideUnknownLocations: true });
+    assert.equal(apply(e, 'pending', f, { info: null }).verdict.hide, false, 'Never skip a pending lookup by hiding its author');
+    e.info.set('missing', null);
+    const missing = apply(e, 'missing', f, { info: null });
+    assert.deepEqual(Array.from(missing.state.reasons), ['unknownLocation']);
+    assert.equal(missing.verdict.hide, true);
+    assert.equal(apply(e, 'broad', f, { info: { location: 'North America' } }).verdict.hide, true);
+    f.settings.hideUnknownLocations = false;
+    assert.equal(apply(e, 'missing', f, { info: null }).verdict.hide, false);
+});
+
+await check('Location focus preserves exemptions, quote boundaries and Hide/Highlight behavior', () => {
+    const e = environment(), f = filters({ europeUsOnly: true });
+    const info = { location: 'Japan' };
+    f.allowedUsers.add('friend');
+    assert.equal(apply(e, 'friend', f, { info }).verdict.hide, false);
+    assert.equal(apply(e, 'reader', f, { info }).verdict.hide, false);
+    f.settings.alwaysShowFollowing = true;
+    e.following.add('followed');
+    assert.equal(apply(e, 'followed', f, { info }).verdict.hide, false);
+    assert.equal(apply(e, 'alice', f, { info, userCell: true }).verdict.hide, false);
+    assert.equal(apply(e, 'alice', f, { info, tweet: node({ focal: true }) }).verdict.hide, false);
+    const quote = apply(e, 'quoted', f, { info, element: node({ quote: true }) });
+    assert.equal(quote.verdict.hide, false, 'The enclosing post stays visible');
+    assert.equal(quote.element.dataset.xQuoteBlock, 'hide', 'Only the quoted card is collapsed');
+    assert.equal(quote.tweet.dataset.xBlock, undefined, 'A quote never hides its enclosing author');
+    f.settings.highlightBlockedTweets = true;
+    assert.equal(apply(e, 'alice', f, { info }).verdict.hide, false);
+});
+
+await check('Related-post verdicts use the same location policy without fetching missing authors', () => {
+    const e = environment(), f = filters({ europeUsOnly: true, hideUnknownLocations: true });
+    const record = { id: '123', author: 'alice' };
+    assert.deepEqual(Array.from(e.context.knownPostVerdict(record, f).reasons), []);
+    e.info.set('alice', { location: 'Nigeria' });
+    assert.deepEqual(Array.from(e.context.knownPostVerdict(record, f).reasons), ['locationFocus']);
+    e.info.set('alice', { location: 'Germany' });
+    assert.deepEqual(Array.from(e.context.knownPostVerdict(record, f).reasons), []);
+    e.info.set('alice', null);
+    assert.deepEqual(Array.from(e.context.knownPostVerdict(record, f).reasons), ['unknownLocation']);
 });
 
 console.log(`\n${groups} quick-filter regression groups passed.`);

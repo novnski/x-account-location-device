@@ -1174,16 +1174,13 @@ async function handleInstalled(details) {
             [STORAGE_KEYS.LAST_VERSION]: VERSION
         });
 
-        // v3.0.0: enable the community cloud cache by default for NEW installs only.
-        // Existing users keep whatever they had (the update branch never touches it),
-        // so this is not a silent opt-in for current users. It makes flags resilient
-        // to X API rate-limiting out of the box; users can opt out in Options.
-        // initialize() is idempotent and ensures cloudCache exists before we flip it.
+        // This fork makes sharing public account metadata with the community cache
+        // opt-in. Updates preserve the existing preference.
         try {
             await initialize();
-            await cloudCache.setEnabled(true);
+            await cloudCache.setEnabled(false);
         } catch (cloudErr) {
-            console.warn('Could not enable cloud cache on install:', cloudErr);
+            console.warn('Could not initialize cloud cache preference:', cloudErr);
         }
 
         // The same release tour introduces the extension to new users.

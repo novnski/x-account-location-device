@@ -16,6 +16,7 @@ import { createFilterPlaceholder, updateFilterPlaceholder } from './filter-place
 import { createRelatedPostController } from './related-posts.js';
 import { rememberPostRelation } from './post-relations-cache.js';
 import { matchingBlockedRegions } from '../shared/region-membership.js';
+import { locationFocusReason } from '../shared/location-focus.js';
 import { captureDisplayName, emojiImageText } from './display-name.js';
 import {
     ACCOUNT_COUNT_FILTERS, countDisplayNameDigits, countHandleDigits, isAccountCountThreshold, matchesAccountCount
@@ -79,6 +80,7 @@ function resolveAuthorBlockState(element, screenName, info, filters, tweet, isUs
         isAccountBlocked: blockedAccounts?.has(observedAccountId(info, observedProfile)) === true,
         isBlockedCountry: location !== '' && blockedCountries.has(location),
         isBlockedRegion: matchingBlockedRegions(location, blockedRegions, settings.regionCountrySelections).length > 0,
+        locationReason: locationFocusReason(info, settings, Boolean(info) || userInfoCache.has(screenName)),
         isTagBlocked: blockedTags?.size > 0 && hasBlockedTag(displayName, blockedTags),
         isBioBlocked: hasBlockedBio(profile, blockedBioTags, settings),
         isLinkBlocked: hasBlockedLink(profile, blockedLinks, settings),
@@ -117,12 +119,13 @@ function resolveAccountCountReasons(screenName, profile, settings, displayName) 
  * Presentation never needs to parse a comma-separated verdict or profile text.
  */
 function resolveBlockReasons({ isExempt, isAccountBlocked, isBlockedCountry, isBlockedRegion, isTagBlocked,
-    isBioBlocked, isLinkBlocked, isLabelBlocked, isAffiliationBlocked, accountCountReasons = [] }) {
+    isBioBlocked, isLinkBlocked, isLabelBlocked, isAffiliationBlocked, locationReason = '', accountCountReasons = [] }) {
     if (isExempt) return [];
     const reasons = [];
     if (isAccountBlocked) reasons.push('account');
     if (isBlockedCountry) reasons.push('country');
     if (isBlockedRegion) reasons.push('region');
+    if (locationReason) reasons.push(locationReason);
     if (isTagBlocked) reasons.push('tag');
     if (isBioBlocked) reasons.push('bio');
     if (isLinkBlocked) reasons.push('link');
@@ -137,6 +140,7 @@ const BLOCK_REASON_LABELS = {
     country: 'Country', region: 'Region', tag: 'Display name', bio: 'Bio or profile location',
     link: 'Linked domain / URL', label: 'Account label', affiliation: 'Affiliation',
     vpn: 'Location warning', language: 'Post language',
+    locationFocus: 'Outside Europe + United States', unknownLocation: 'Unknown account location',
     ...Object.fromEntries(ACCOUNT_COUNT_FILTERS.map(({ reason, label }) => [reason, label]))
 };
 const QUOTE_PLACEHOLDER_CLASS = 'x-quote-placeholder';
@@ -438,6 +442,7 @@ function knownPostVerdict(record, filters) {
         isAccountBlocked: authorId !== '' && blockedAccounts?.has(authorId) === true,
         isBlockedCountry: country !== '' && blockedCountries?.has(country),
         isBlockedRegion: matchingBlockedRegions(country, blockedRegions, settings.regionCountrySelections).length > 0,
+        locationReason: locationFocusReason(info, settings, Boolean(info) || userInfoCache.has(screenName)),
         isTagBlocked: hasBlockedTag(record.displayName, blockedTags),
         isBioBlocked: hasBlockedBio(profile, blockedBioTags, settings),
         isLinkBlocked: hasBlockedLink(profile, blockedLinks, settings),
@@ -1673,8 +1678,9 @@ export async function processElement(element, {
             // network) for the session — caching null used to blank the user until LRU
             // eviction or a reload, even after the condition cleared. Only genuine
             // misses (not-found/unknown) are negative-cached.
-            if (!isTransient) {
+            if (code === 'NOT_FOUND') {
                 userInfoCache.set(screenName, null);
+                applyCurrentInfo(null);
             }
             return;
         }

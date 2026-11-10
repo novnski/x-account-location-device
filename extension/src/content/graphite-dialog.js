@@ -10,6 +10,7 @@ import { getRegionCountries, getRegionDescription, getIncludedRegionCountries, h
 import { flagImage } from './icons.js';
 import { dialogIcon as glyph } from './dialog-icons.js';
 import { createProfilePicker } from '../shared/profile-picker.js';
+import { EUROPE_US_COUNTRIES } from '../shared/location-focus.js';
 
 const SOURCES = [
     { key: 'countries', title: 'Countries', label: 'Country', icon: 'globe', hint: 'Countries reported by X.' },
@@ -148,7 +149,7 @@ function createBlockingSurface(config, container = null) {
     const drafts = Object.create(null);
     const expandedRegions = new Set();
     const regionQueries = Object.create(null);
-    const view = { tab: 'add', editor: null, query: '', source: 'all', catalogQuery: '', selectedOnly: false, userQuery: '', linkMode: 'auto', clearKind: null, countMetric: ACCOUNT_COUNT_FILTERS[0].key };
+    const view = { tab: 'locations', editor: null, query: '', source: 'all', catalogQuery: '', selectedOnly: false, userQuery: '', linkMode: 'auto', clearKind: null, countMetric: ACCOUNT_COUNT_FILTERS[0].key };
 
     const overlay = embedded ? null : el('div', `${CSS_CLASSES.MODAL_OVERLAY} xp-graphite-overlay`);
     const modal = createElement('div', {
@@ -329,7 +330,7 @@ function createBlockingSurface(config, container = null) {
     }
 
     function navigate(tab, editor = null) {
-        if (closed || !['add', 'saved', 'allowed', 'behavior'].includes(tab)) return;
+        if (closed || !['locations', 'add', 'saved', 'allowed', 'behavior'].includes(tab)) return;
         if (editor && !FILTERS.some(source => source.key === editor)) return;
         deferredFocusId = '';
         const previousEditor = view.editor;
@@ -978,6 +979,30 @@ function createBlockingSurface(config, container = null) {
         return container;
     }
 
+    function renderLocations() {
+        const container = el('div', 'xp-g-behavior');
+        const section = el('section', 'xp-g-behavior-section');
+        const heading = el('h3', '', 'Europe + United States');
+        heading.id = 'x-g-location-heading';
+        section.setAttribute('aria-labelledby', heading.id);
+        const rows = el('div', 'xp-g-behavior-rows');
+        rows.append(settingSwitch('europeUsOnly', 'Only keep Europe and the United States',
+            'Filter posts from accounts based elsewhere. Uses X\'s Account based in label, even when flags use the app-store country.'));
+        const unknown = settingSwitch('hideUnknownLocations', 'Also filter unknown locations',
+            'Include missing, unrecognized or ambiguous labels, such as North America. Pending lookups and request failures stay visible.');
+        unknown.querySelector('input').disabled ||= settings.europeUsOnly !== true;
+        rows.append(unknown);
+        section.append(heading, rows);
+        const coverage = el('details', 'xp-g-details');
+        coverage.append(el('summary', '', `Included countries and territories (${EUROPE_US_COUNTRIES.length})`),
+            el('p', '', EUROPE_US_COUNTRIES.map(formatCountryName).join(', ')),
+            el('p', '', 'Also accepts Europe, European Union and Eastern Europe (Non-EU) labels. Europe follows the existing geographic grouping, plus Cyprus. Russia is included; Turkey and the Caucasus are excluded.'));
+        const note = el('p', 'xp-g-notice',
+            'Use Hide or Highlight above. Always Show exceptions still apply. Other saved filters can still match accounts inside these locations. Quoted posts are checked separately; posts you open directly stay readable.');
+        container.append(section, coverage, note);
+        return container;
+    }
+
     function renderBehavior() {
         const container = el('div', 'xp-g-behavior');
 
@@ -1004,7 +1029,7 @@ function createBlockingSurface(config, container = null) {
 
         const data = group('Data sources', 'x-g-behavior-data');
         data.rows.append(settingSwitch('flagFromDevice', 'Use device country when available',
-            'Use the connected app’s country for flags and location filters. Otherwise, use account location.',
+            'Use the connected app’s country for flags and country/region filters. Europe + United States mode always uses account location.',
             { id: 'x-g-behavior-flagFromDevice' }));
         const profile = settingSwitch('profileEnrichment', 'Use profile details',
             'Use bios, links and activity counts X already loads. No extra requests.',
@@ -1035,7 +1060,7 @@ function createBlockingSurface(config, container = null) {
         const regionScroll = [...body.querySelectorAll('.xp-g-region-countries')].map(node => [node.id, node.scrollTop]);
         const count = filterTotal();
         // Keep the tab nodes stable so keyboard focus survives broadcasts.
-        if (!tabs.children.length) {for (const [key, text] of [['add', 'Add filter'], ['saved', 'Saved filters'], ['allowed', 'Always Show'], ['behavior', 'Behavior']]) {
+        if (!tabs.children.length) {for (const [key, text] of [['locations', 'Locations'], ['add', 'Add filter'], ['saved', 'Saved filters'], ['allowed', 'Always Show'], ['behavior', 'Behavior']]) {
             const tab = button('', () => navigate(key));
             tab.id = `x-g-tab-${key}`; tab.dataset.tab = key; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', body.id);
             tab.append(el('span', 'xp-g-tab-label', text), el('span', 'xp-g-count')); tabs.append(tab);
@@ -1054,7 +1079,8 @@ function createBlockingSurface(config, container = null) {
             const active = view.tab === tab.dataset.tab;
             tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
             const badge = tab.querySelector('.xp-g-count');
-            badge.textContent = tab.dataset.tab === 'saved' ? String(count) : tab.dataset.tab === 'allowed' ? String(sets.allowedUsers.size) : '';
+            badge.textContent = tab.dataset.tab === 'locations' && settings.europeUsOnly === true ? 'On'
+                : tab.dataset.tab === 'saved' ? String(count) : tab.dataset.tab === 'allowed' ? String(sets.allowedUsers.size) : '';
             badge.hidden = !badge.textContent;
         }
         body.setAttribute('aria-labelledby', `x-g-tab-${view.tab}`);
@@ -1080,7 +1106,10 @@ function createBlockingSurface(config, container = null) {
             else if (CATALOGS[view.editor]) fragment.append(renderCatalog(view.editor));
             else fragment.append(renderTextEditor(view.editor));
             if (view.editor !== COUNT_SOURCE.key) fragment.append(renderClear(view.editor));
-        } else fragment.append(view.tab === 'add' ? renderChooser() : view.tab === 'saved' ? renderLibrary() : view.tab === 'allowed' ? renderUsers() : renderBehavior());
+        } else {
+            fragment.append(view.tab === 'locations' ? renderLocations()
+                : view.tab === 'add' ? renderChooser() : view.tab === 'saved' ? renderLibrary() : view.tab === 'allowed' ? renderUsers() : renderBehavior());
+        }
         body.replaceChildren(fragment);
         body.scrollTop = preserveFocus ? scrollTop : 0;
         if (preserveFocus) {

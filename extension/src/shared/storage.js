@@ -698,6 +698,9 @@ class SettingsStorage {
                 this.settings.showBadgeBackground = DEFAULT_SETTINGS.showBadgeBackground;
             }
             this.settings.highlightInLists = this.settings.highlightInLists === true;
+            for (const key of ['europeUsOnly', 'hideUnknownLocations']) {
+                this.settings[key] = this.settings[key] === true;
+            }
             for (const { key, max } of ACCOUNT_COUNT_FILTERS) {
                 if (!isAccountCountThreshold(this.settings[key], max)) this.settings[key] = DEFAULT_SETTINGS[key];
             }
@@ -716,6 +719,9 @@ class SettingsStorage {
             if (!BADGE_SIZES.includes(values.badgeSize)) throw new TypeError('Invalid badge size.');
             if (typeof values.showBadgeBackground !== 'boolean') throw new TypeError('Invalid badge background preference.');
             if (typeof values.highlightInLists !== 'boolean') throw new TypeError('Invalid List highlighting preference.');
+            for (const key of ['europeUsOnly', 'hideUnknownLocations']) {
+                if (typeof values[key] !== 'boolean') throw new TypeError(`Invalid location preference: ${key}.`);
+            }
             normalizeRegionCountrySelections(values.regionCountrySelections, { strict: true });
             for (const { key, max } of ACCOUNT_COUNT_FILTERS) {
                 if (!isAccountCountThreshold(values[key], max)) throw new TypeError(`Invalid account-count threshold: ${key}.`);

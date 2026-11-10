@@ -70,11 +70,8 @@ export const CLOUD_CACHE_CONFIG = {
     // Rate limiting (client-side)
     MAX_REQUESTS_PER_MINUTE: 30
 };
-// NOTE: there is deliberately no ENABLED_BY_DEFAULT here. Since v3.0.0 the cache is
-// turned on for NEW installs only, by handleInstalled() in background/service-worker.js,
-// and the live state is read straight from STORAGE_KEYS.CLOUD_CACHE_ENABLED. A constant
-// mirroring that would be a second source of truth that nothing reads and everything
-// misquotes — the old one claimed "opt-in only" long after it had stopped being true.
+// The live opt-in preference lives in STORAGE_KEYS.CLOUD_CACHE_ENABLED. The install
+// handler explicitly disables it for new installs of this fork; updates preserve it.
 
 // Z-index layering (ensures consistent stacking order)
 export const Z_INDEX = {
@@ -234,6 +231,8 @@ export const DEFAULT_SETTINGS = {
     showSidebarBlockerLink: true,
     alwaysShowFollowing: false,  // Exempt accounts X confirms this viewer follows; relationship data stays in page-session memory.
     hideRelatedPosts: false,  // Collapse replies and quotes when their source is known to match a filter, including highlighted sources.
+    europeUsOnly: false,  // Match accounts based outside Europe and the United States.
+    hideUnknownLocations: false,  // Only applies after a location lookup has resolved.
     // Region keys are opt-in country lists. Absent = X label only; [] = no countries selected.
     regionCountrySelections: Object.freeze({}),
     openChangelogOnUpdate: true,  // Open the "What's New"/changelog tab after a major/minor update (issue #24)
