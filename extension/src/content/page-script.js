@@ -47,7 +47,6 @@ import { generateFallbackHeaders } from '../shared/x-api-headers.js';
     const EVENT_CHAT_USERS = 'x-posed-chat-users';
     const EVENT_SHADOW_ROOT_READY = 'x-posed-shadow-root-ready';
     const API_PATTERN = /x\.com\/i\/api\/graphql/;
-    const ABOUT_QUERY_ID = 'XRqGa7EeokUU5kppkh13EA';
     const lookupQueue = new PacedLookupQueue({
         minIntervalMs: API_CONFIG.MIN_INTERVAL_MS,
         maxConcurrent: API_CONFIG.MAX_CONCURRENT
@@ -398,7 +397,7 @@ import { generateFallbackHeaders } from '../shared/x-api-headers.js';
                         throw Object.assign(new Error('No captured page headers available'), { code: 'NO_HEADERS' });
                     }
                     const variables = encodeURIComponent(JSON.stringify({ screenName }));
-                    const url = `/i/api/graphql/${ABOUT_QUERY_ID}/AboutAccountQuery?variables=${variables}`;
+                    const url = `/i/api/graphql/${API_CONFIG.QUERY_ID}/AboutAccountQuery?variables=${variables}`;
                     const response = await fetch(url, {
                         headers: { ...headers, 'accept-language': 'en-US,en;q=0.9' },
                         method: 'GET', credentials: 'include', signal

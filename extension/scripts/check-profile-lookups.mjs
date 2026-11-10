@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { rollup } from 'rollup';
+import { API_CONFIG } from '../src/shared/constants.js';
 
 const bundle = await rollup({ input: fileURLToPath(new URL('../src/content/page-script.js', import.meta.url)) });
 const { output } = await bundle.generate({ format: 'iife' });
@@ -67,6 +68,7 @@ await check('Full metadata is obtained in the original account lookup without a 
     await tick();
     assert.equal(h.requests.length, 1);
     const request = h.requests[0];
+    assert.ok(request.input.includes(`/${API_CONFIG.QUERY_ID}/AboutAccountQuery?`), 'Page and background share the current X query ID');
     assert.equal(request.init.credentials, 'include');
     assert.equal(request.init.headers.authorization, 'synthetic-session-a');
     await h.reply(request);

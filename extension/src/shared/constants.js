@@ -113,7 +113,7 @@ export const CACHE_CONFIG = {
 // API configuration
 // PERFORMANCE: Optimized for faster lookups while respecting rate limits
 export const API_CONFIG = {
-    QUERY_ID: 'XRqGa7EeokUU5kppkh13EA', // AboutAccountQuery
+    QUERY_ID: 'TzOG2twZEfhr9KmClvVVqA', // AboutAccountQuery, verified in X's web client on 2026-11-11.
     BASE_URL: 'https://x.com/i/api/graphql',
     MIN_INTERVAL_MS: 150,    // Reduced from 300ms for faster lookups
     MAX_CONCURRENT: 8,       // Increased from 5 for more parallel requests
