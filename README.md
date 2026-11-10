@@ -16,7 +16,8 @@ Personal fork of [Alexander Hagenah's X-Posed](https://github.com/xaitax/x-accou
 1. With Node.js 20 or newer, in `extension/`, run `npm ci`, `npm run build`, and `npm run check:build`.
 2. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
 3. Select this checkout's `extension/dist/chrome` directory.
-4. Reload X, open the extension's **Manage filters**, and enable the mode in **Locations**. Hide is the default action.
+4. Refresh **every already-open X tab** once. Switching pages inside X does not activate the extension in an old tab. The **Blocking** link in X's sidebar confirms that the extension is running there.
+5. Open **Blocking > Locations** and enable the mode. Hide is the default action.
 
 This fork has a distinct extension name and Firefox ID. Avoid enabling the upstream extension and this fork on X at the same time because both modify timeline posts. It is not published to a browser store.
 
